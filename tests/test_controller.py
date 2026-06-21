@@ -3,7 +3,7 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from smart_home.controller import resolve_action, plan_step, Step
+from smart_home.controller import resolve_action, plan_step, control_every, Step
 from smart_home.economics import Action, Slot
 from smart_home.schedule import Schedule
 
@@ -35,6 +35,20 @@ def test_resolve_action_failsafe_when_not_covered():
 
 def test_resolve_action_empty_schedule_is_normal():
     assert resolve_action(Schedule([]), datetime(2026, 6, 21, 10, 5, tzinfo=BRUSSELS)) == Action.NORMAL
+
+
+# --- control_every (telemetry vs control cadence) -------------------------
+
+def test_control_every_ratio():
+    assert control_every(30.0, 1.0) == 30      # 1 control tick per 30 telemetry ticks
+    assert control_every(30.0, 2.0) == 15
+    assert control_every(30.0, 30.0) == 1      # same cadence
+
+
+def test_control_every_never_below_one():
+    # telemetry slower than control -> still run control every tick, never 0
+    assert control_every(1.0, 30.0) == 1
+    assert control_every(30.0, 0.0) == 1
 
 
 # --- plan_step ------------------------------------------------------------

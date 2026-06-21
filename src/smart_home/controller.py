@@ -1,6 +1,15 @@
 """Phase 3 control daemon: apply the cached day-ahead plan to the inverter, fail-safe.
 
-Each cycle:
+The loop runs at **two cadences** (the controller is the sole inverter Modbus client, so all
+reads/publishes happen here — they can't be split into a competing process):
+
+* **Telemetry tick** (``telemetry_interval_s``, default 1 s): read the P1 (net grid power) and
+  the inverter's PV output, then publish ``pv_power``/``grid_power``/``load_power`` (+ phases,
+  totals) to MQTT for Home Assistant. High-resolution monitoring, no decisions, no writes.
+* **Control tick** (``interval_s``, default 30 s): the curtailment *decision*. Price slots are
+  15 min and the inverter ramps at ~0.277 %/s, so the decision needs nothing faster.
+
+Each control tick:
   1. Resolve the current :class:`~smart_home.economics.Action` from the cached schedule
      (``action_at(now)``). If the plan doesn't cover *now*, **fail safe to NORMAL** (no
      curtailment) — we never leave the inverter stuck curtailed because of a stale plan.
@@ -9,6 +18,10 @@ Each cycle:
      value by more than a deadband (the inverter ramps slowly at ~0.277 %/s, so frequent
      tiny writes are pointless).
   4. Any error -> restore 100% (fail-safe) and keep looping.
+
+The cached action / derating / belpex from the last control tick ride along on every
+telemetry publish, so the fast-changing power values stay at 1 Hz while the slow decision
+fields update every control tick.
 
 The inverter is the **sole Modbus client** here (single-connection constraint). Reads are
 unauthenticated; a write triggers an installer ``login()`` (cached; re-login on permission
@@ -38,7 +51,8 @@ from smart_home.schedule import DEFAULT_PATH, Schedule
 BRUSSELS = ZoneInfo("Europe/Brussels")
 FULL_POWER_PCT = 100.0
 DEFAULT_DEADBAND_PCT = 2.0
-DEFAULT_INTERVAL_S = 30.0
+DEFAULT_INTERVAL_S = 30.0           # control-decision cadence
+DEFAULT_TELEMETRY_INTERVAL_S = 1.0  # MQTT publish / fast-read cadence
 
 log = logging.getLogger("smart_home.controller")
 
@@ -59,6 +73,13 @@ def resolve_action(schedule: Schedule, now: datetime) -> Action:
     """Action for ``now`` from the plan, or NORMAL fail-safe if the plan doesn't cover it."""
     slot = schedule.action_at(now)
     return slot.action if slot is not None else Action.NORMAL
+
+
+def control_every(interval_s: float, telemetry_interval_s: float) -> int:
+    """How many telemetry ticks fall between control ticks (>= 1)."""
+    if telemetry_interval_s <= 0:
+        return 1
+    return max(1, round(interval_s / telemetry_interval_s))
 
 
 def plan_step(
@@ -110,6 +131,12 @@ class InverterClient:
         data = await self._device.batch_update(list(names.values()))
         return {k: getattr(data[r], "value", None) for k, r in names.items()}
 
+    async def read_active_power(self) -> float | None:
+        """Light read of just PV AC output (for the 1 Hz telemetry tick)."""
+        from huawei_solar import register_names as rn  # noqa: PLC0415
+        data = await self._device.batch_update([rn.ACTIVE_POWER])
+        return getattr(data[rn.ACTIVE_POWER], "value", None)
+
     async def set_derating(self, pct: float) -> None:
         from huawei_solar import register_names as rn  # noqa: PLC0415
         try:
@@ -134,6 +161,7 @@ async def run(
     password: str,
     margin_w: float = DEFAULT_MARGIN_W,
     interval_s: float = DEFAULT_INTERVAL_S,
+    telemetry_interval_s: float = DEFAULT_TELEMETRY_INTERVAL_S,
     deadband_pct: float = DEFAULT_DEADBAND_PCT,
     dry_run: bool = False,
     once: bool = False,
@@ -153,59 +181,92 @@ async def run(
         pub = Publisher(mqtt_host, mqtt_port, mqtt_user, mqtt_password, node_id=node_id)
         pub.connect()
         log.info("MQTT publishing to %s:%d", mqtt_host, mqtt_port)
+    if pub is not None:
+        from smart_home.mqtt import state_payload  # noqa: PLC0415
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
 
+    control_ratio = control_every(interval_s, telemetry_interval_s)
+    # cached outputs of the last control tick, published on every (faster) telemetry tick
+    action = Action.NORMAL
+    target_pct = FULL_POWER_PCT
+    derating_pct: float | None = None
+    belpex: float | None = None
+    tick = 0
+
     try:
         while not stop.is_set():
-            try:
-                now = datetime.now(BRUSSELS)
-                schedule = Schedule.load(plan_path)
-                slot = schedule.action_at(now)
-                action = slot.action if slot is not None else Action.NORMAL  # fail-safe NORMAL
-                reading = await inv.read()
-                p1r = await asyncio.to_thread(p1_mod.read, p1_host)
-                step = plan_step(
-                    action,
-                    inverter_active_power_w=reading["active_power"] or 0.0,
-                    p1_net_w=p1r.active_power_w,
-                    p_max_w=reading["p_max"] or 5000.0,
-                    current_derating_pct=reading["derating"] if reading["derating"] is not None else FULL_POWER_PCT,
-                    margin_w=margin_w,
-                    deadband_pct=deadband_pct,
-                )
-                log.info(
-                    "action=%s target=%.1f%% (cur=%s%%) write=%s prod=%sW net=%+dW :: %s",
-                    step.action.value, step.target_percent, reading["derating"],
-                    step.should_write, reading["active_power"], int(p1r.active_power_w), step.reason,
-                )
-                if step.should_write and not dry_run:
-                    await inv.set_derating(step.target_percent)
-                    log.info("wrote derating=%.1f%%", step.target_percent)
-                    reading["derating"] = step.target_percent
-                if pub is not None:
-                    from smart_home.mqtt import state_payload  # noqa: PLC0415
+            do_control = (tick % control_ratio == 0)
+            tick += 1
+            pv: float | None = None
+            p1r = None
+
+            # --- control cadence: decide + (maybe) write -----------------
+            if do_control:
+                try:
+                    now = datetime.now(BRUSSELS)
+                    schedule = Schedule.load(plan_path)
+                    slot = schedule.action_at(now)
+                    action = slot.action if slot is not None else Action.NORMAL  # fail-safe NORMAL
+                    belpex = slot.belpex if slot is not None else None
+                    reading = await inv.read()
+                    p1r = await asyncio.to_thread(p1_mod.read, p1_host)
+                    pv = reading["active_power"]
+                    cur = reading["derating"] if reading["derating"] is not None else FULL_POWER_PCT
+                    step = plan_step(
+                        action,
+                        inverter_active_power_w=pv or 0.0,
+                        p1_net_w=p1r.active_power_w,
+                        p_max_w=reading["p_max"] or 5000.0,
+                        current_derating_pct=cur,
+                        margin_w=margin_w,
+                        deadband_pct=deadband_pct,
+                    )
+                    target_pct = step.target_percent
+                    derating_pct = reading["derating"]
+                    log.info(
+                        "action=%s target=%.1f%% (cur=%s%%) write=%s prod=%sW net=%+dW :: %s",
+                        step.action.value, step.target_percent, reading["derating"],
+                        step.should_write, pv, int(p1r.active_power_w), step.reason,
+                    )
+                    if step.should_write and not dry_run:
+                        await inv.set_derating(step.target_percent)
+                        log.info("wrote derating=%.1f%%", step.target_percent)
+                        derating_pct = step.target_percent
+                except Exception:
+                    log.exception("control cycle failed -> fail-safe to %.0f%%", FULL_POWER_PCT)
+                    action, target_pct = Action.NORMAL, FULL_POWER_PCT
+                    pv, p1r = None, None  # force a fresh light read below
+                    if not dry_run:
+                        try:
+                            await inv.set_derating(FULL_POWER_PCT)
+                        except Exception:
+                            log.exception("FAIL-SAFE WRITE FAILED")
+
+            # --- telemetry cadence (every tick): fast read + publish -----
+            if pub is not None:
+                try:
+                    if pv is None:
+                        pv = await inv.read_active_power()
+                    if p1r is None:
+                        p1r = await asyncio.to_thread(p1_mod.read, p1_host)
                     pub.publish_state(state_payload(
-                        action=action.value, derating_pct=reading["derating"],
-                        target_derating_pct=step.target_percent,
-                        pv_power_w=reading["active_power"] or 0.0, grid_net_w=p1r.active_power_w,
+                        action=action.value, derating_pct=derating_pct,
+                        target_derating_pct=target_pct,
+                        pv_power_w=pv or 0.0, grid_net_w=p1r.active_power_w,
                         l1_w=p1r.active_power_l1_w, l2_w=p1r.active_power_l2_w, l3_w=p1r.active_power_l3_w,
                         import_total_kwh=p1r.total_import_kwh, export_total_kwh=p1r.total_export_kwh,
-                        belpex=slot.belpex if slot is not None else None,
+                        belpex=belpex,
                     ))
-            except Exception:
-                log.exception("cycle failed -> fail-safe to %.0f%%", FULL_POWER_PCT)
-                if not dry_run:
-                    try:
-                        await inv.set_derating(FULL_POWER_PCT)
-                    except Exception:
-                        log.exception("FAIL-SAFE WRITE FAILED")
+                except Exception:
+                    log.debug("telemetry tick failed", exc_info=True)
+
             if once:
                 break
             try:
-                await asyncio.wait_for(stop.wait(), timeout=interval_s)
+                await asyncio.wait_for(stop.wait(), timeout=telemetry_interval_s)
             except asyncio.TimeoutError:
                 pass
     finally:
@@ -227,7 +288,11 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--inverter-port", type=int, default=6607)
     ap.add_argument("--p1-host", required=True)
     ap.add_argument("--margin", type=float, default=DEFAULT_MARGIN_W)
-    ap.add_argument("--interval", type=float, default=DEFAULT_INTERVAL_S)
+    ap.add_argument("--interval", type=float, default=DEFAULT_INTERVAL_S,
+                    help="control-decision cadence in seconds (default 30)")
+    ap.add_argument("--telemetry-interval", type=float,
+                    default=float(os.environ.get("TELEMETRY_INTERVAL", DEFAULT_TELEMETRY_INTERVAL_S)),
+                    help="MQTT publish / fast-read cadence in seconds (default 1)")
     ap.add_argument("--deadband", type=float, default=DEFAULT_DEADBAND_PCT)
     ap.add_argument("--dry-run", action="store_true", help="compute + log, never write")
     ap.add_argument("--once", action="store_true", help="run a single cycle and exit")
@@ -248,7 +313,8 @@ def main(argv: list[str] | None = None) -> None:
         plan_path=args.plan_path,
         inverter_host=args.inverter_host, inverter_port=args.inverter_port,
         p1_host=args.p1_host, user=user, password=password,
-        margin_w=args.margin, interval_s=args.interval, deadband_pct=args.deadband,
+        margin_w=args.margin, interval_s=args.interval,
+        telemetry_interval_s=args.telemetry_interval, deadband_pct=args.deadband,
         dry_run=args.dry_run, once=args.once,
         mqtt_host=args.mqtt_host, mqtt_port=args.mqtt_port,
         mqtt_user=args.mqtt_user, mqtt_password=os.environ.get("MQTT_PW"),
