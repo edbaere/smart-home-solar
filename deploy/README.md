@@ -47,8 +47,16 @@ set -a; source /etc/smart_home.env; set +a
 ## Monitoring stack (Home Assistant + MQTT)
 
 `docker-compose.yml` runs **Mosquitto** + **Home Assistant** (host networking).
-`smart_home-publisher.service` runs the controller in **`--dry-run`** (reads + publishes to
-MQTT every 30 s, never writes) so HA shows live data before actuation is enabled.
+`smart_home-publisher.service` runs the controller in **`--dry-run`** (never writes) so HA
+shows live data before actuation is enabled. Telemetry (PV / grid / load + phases) is read and
+published at **1 Hz** by default (`--telemetry-interval`); the curtailment decision still only
+ticks every `--interval` (30 s). Lower the rate (`--telemetry-interval 2`) if the inverter
+hotspot link is flaky.
+
+> **HA recorder:** 1 Hz × ~12 sensors is a lot of rows. If the SQLite DB grows uncomfortably,
+> add a `recorder:` block in HA `configuration.yaml` — e.g. `commit_interval: 5` and a short
+> `purge_keep_days` — or exclude the high-rate power sensors from long-term recording. Power
+> sensors keep their hourly long-term statistics regardless.
 
 ```bash
 cd deploy && docker compose up -d                       # Mosquitto + Home Assistant

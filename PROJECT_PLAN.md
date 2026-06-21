@@ -145,7 +145,11 @@ Confirmed live (SUN2000-4.6KTL-L1, `P_MAX = 5000 W`):
 5. **Home Assistant + dashboards + alerting** — Pi publishes readings + decision via MQTT
    with HA auto-discovery (`mqtt.py`, published from the controller loop — sole inverter
    client; `--dry-run` gives monitoring-only). HA (separate box, or this Pi on the 230 GB
-   card via Docker) subscribes. *(publisher built; broker + HA install pending.)*
+   card via Docker) subscribes. Telemetry (PV/grid/load + phases) publishes at **1 Hz**
+   (`--telemetry-interval`), decoupled from the 30 s control-decision cadence (`--interval`):
+   each tick reads P1 + inverter PV and publishes; the decision (and any write) only runs on
+   the slow tick, with its cached action/derating/belpex riding along on every fast publish.
+   *(publisher built; broker + HA install pending.)*
 
 ---
 
