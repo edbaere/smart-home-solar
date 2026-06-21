@@ -25,6 +25,8 @@ src/smart_home/
   p1.py          # read-only HomeWizard P1 reader (net grid power)
   inverter.py    # Huawei SUN2000 reader over built-in WLAN 6607 (huawei-solar) [hw extra]
   modbus_tcp.py  # generic raw Modbus-TCP reader (RS485-bridge / port-502 fallback)
+  control.py     # compute derating % from action + live measurements (pure)
+  status.py      # read-only pre-flight: live readings + setpoint preview (no writes)
 tests/           # offline unit tests
 ```
 
@@ -82,3 +84,12 @@ python3 -m smart_home.p1 <p1-host-or-ip> # net grid power (− = injecting)
 The inverter dump shows PV output (`active_power`), `control_mode`, the derating registers
 (40125 %, 40126 W) and the **power-change gradient** (≈0.277 %/s — why curtailment ramps over
 ~3 min). Curtailment writes (Phase 3+) require an installer `login()`.
+
+### Status / pre-flight (read-only)
+
+Reads both devices and previews the derating each action would apply — never writes:
+
+```bash
+python3 -m smart_home.status --p1-host 192.168.3.74
+# --inverter-host/--inverter-port default to the WLAN AP; --margin overrides the buffer
+```
