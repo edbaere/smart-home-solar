@@ -21,6 +21,9 @@ Given the day-ahead `BELPEX` (EUR/MWh):
 src/smart_home/
   economics.py   # pure decision engine (BELPEX -> Action)
   prices.py      # ENTSO-E day-ahead -> raw BELPEX -> daily Slot schedule
+  schedule.py    # persisted whole-day plan (refresh daily, look up action_at(now))
+  p1.py          # read-only HomeWizard P1 reader (net grid power)
+  inverter.py    # read-only Huawei SUN2000 Modbus reader (PV power, control state)
 tests/           # offline unit tests
 ```
 
@@ -61,3 +64,17 @@ python3 -m smart_home.schedule now                                     # action 
 The plan is written to `~/.smart_home/schedule.json` (atomic write). On the Pi, drive
 `refresh` from a daily timer at ~16:00 (cron or a `systemd` timer). `now` exits non-zero and
 reports a NORMAL fail-safe if the plan does not cover the current time.
+
+## Hardware readers (Phase 1, read-only)
+
+Run on the Pi / local network. Read-only — these never write to the inverter.
+
+```bash
+python3 -m smart_home.p1 <p1-host-or-ip>            # net grid power (− = injecting)
+python3 -m smart_home.inverter <inverter-host-or-ip>  # PV power + control-state registers
+```
+
+The inverter dump includes the current `active_power_control_mode` (47415),
+`active_power_fixed_value_derating_w` (40126, the zero-export actuator) and
+`active_power_adjustment_mode` (35300) — so we can see the control state before any write.
+Modbus-TCP may need enabling on the SDongle (FusionSolar / installer).

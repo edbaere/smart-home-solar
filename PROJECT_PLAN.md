@@ -88,20 +88,28 @@ Non-energy adders ≈ **11.494** EURct/kWh (day) / **10.304** (night).
   `total_power_import_kwh`, `total_power_export_kwh`. Poll ~1 Hz.
 - Target the **v2** HTTPS + bearer-token API (v1 deprecated on new firmware).
 
-### Huawei SUN2000 (actuator) — Modbus via `wlcrs/huawei_solar`
-- Modbus-TCP via SDongle (port 502, slave 1) or RS485.
-- **Active power % derating** (holding reg ~40125, gain ×10): `0` = full shutdown;
-  modulate for zero-export.
-- No Huawei DTSU666 meter present → inverter can't self-limit export. **Zero-export is
-  done in software** (P1 feedback → PI loop, ~2–5 s, small import deadband).
-- ⚠️ **Verify:** Modbus *write* may require "Modbus TCP (unrestricted)" enabled via the
-  installer / FusionSolar commissioning. Confirm read first, then write.
+### Huawei SUN2000 (actuator) — Modbus-TCP (SDongle port 502, slave 1) or RS485
+Read map confirmed against `huawei-solar-lib`. Key registers:
+- **`active_power_w` (32080, I32, W)** — AC output = current PV production (read).
+- **`active_power_fixed_value_derating_w` (40126, U32, W)** — the **zero-export actuator**:
+  write `setpoint_W = active_power(32080) + p1.active_power_w` to cap production at the
+  measured load. Watts in, Watts out — matches the P1 directly.
+- `active_power_percentage_derating` (40125, I16, % ×10) — write `0` for **full shutdown**.
+- `active_power_control_mode` (47415) modes 5/6/7 = the inverter's *own* zero/limited export,
+  **but they need a Huawei DTSU666 meter** wired to the inverter. We have a HomeWizard P1, so
+  this path is closed → **zero-export is done in software** (P1 feedback → PI loop, ~2–5 s,
+  small import deadband, writing 40126).
+- ⚠️ **Verify on device:** (a) Modbus *write* may need "Modbus TCP (unrestricted)" enabled via
+  installer/FusionSolar; (b) whether 40126 takes effect directly or needs
+  `active_power_adjustment_mode` (35300) set first. The read-only diagnostic dumps both.
 
 ---
 
 ## 4. Roadmap
 
 1. **Read-only telemetry** — P1 + inverter Modbus read; confirm register map; log net & PV power.
+   *(readers built — `p1.py`, `inverter.py`; on-device verification pending: Modbus reachable?
+   writes unlocked? does 40126 need 35300 set?)*
 2. **Price + economics engine + daily plan** — fetch ENTSO-E A44 day-ahead prices; compute
    `P_feedin`/`P_consume`; emit per-slot decision; persist the whole-day plan
    (`schedule.json`) refreshed once daily (~16:00 timer). Pure, unit-tested, no hardware.
