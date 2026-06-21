@@ -82,11 +82,23 @@ Non-energy adders ≈ **11.494** EURct/kWh (day) / **10.304** (night).
 
 ## 3. Control surfaces
 
-### HomeWizard P1 (sensor)
-- Enable local API in the HomeWizard Energy app.
-- `GET /api/v1/data` → `active_power_w` (**negative = injecting**), per-phase fields,
-  `total_power_import_kwh`, `total_power_export_kwh`. Poll ~1 Hz.
-- Target the **v2** HTTPS + bearer-token API (v1 deprecated on new firmware).
+### HomeWizard P1 (sensor) — ✅ validated live
+- At `192.168.3.74` on the **IoT network** (`192.168.3.x`), local API **v1** enabled
+  (HWE-P1, fw 6.0305). `GET /api/v1/data` → `active_power_w` (**+ = importing, − = injecting**),
+  per-phase fields, totals. `smart_home.p1` reads it directly.
+- ⚠️ **3-phase connection, single-phase PV on L1.** Observed: L1 −1826 W (PV export), L3
+  +2402 W (load), **net +588 W import**. The BE Fluvius digital meter **bills on the net
+  (algebraic sum) of the three phases**, so the control quantity is the net `active_power_w`,
+  not per-phase. *(Assumption to confirm — standard for BE residential.)*
+- **Deployment networking** (Pi): P1 on the IoT VLAN, inverter on its own Wi-Fi AP, ENTSO-E
+  needs internet → three networks vs the Pi's one Ethernet + one Wi-Fi. Routing plan needed.
+
+### Derating logic (`smart_home.control`, pure) — done
+`compute_setpoint(action, inverter_active_power_w, p1_net_w, p_max_w, margin_w)`:
+NORMAL → 100%; FULL_CURTAIL → 0%; ZERO_EXPORT → cap at `load + margin`
+(`load = inverter_active_power + p1_net`) as a % of `P_MAX` for register 40125. The
+**over-production margin** (default 200 W) biases toward slight export — importing the
+shortfall (~12 ct/kWh) is ~10× costlier than the export penalty (~1 ct/kWh).
 
 ### Huawei SUN2000 (actuator) — built-in WLAN, Modbus **6607** ✅ validated live
 **No SDongle, no Huawei meter, no installer Modbus-TCP toggle needed.** The inverter has no
