@@ -1,105 +1,56 @@
-"""Tests for the Huawei Modbus reader: framing + decoding (no hardware)."""
+"""Tests for the WLAN-6607 inverter reader's pure parts (no library, no hardware).
 
-import struct
+The ``huawei-solar`` dependency is imported lazily inside ``read()``, so importing this
+module and exercising ``from_values``/``InverterReading`` needs neither the lib nor the
+inverter.
+"""
 
-import pytest
+from smart_home.inverter import DEFAULT_HOST, DEFAULT_PORT, InverterReading, from_values
 
-from smart_home.inverter import (
-    DIAGNOSTIC,
-    ModbusError,
-    Reg,
-    build_read_request,
-    decode,
-    parse_read_response,
-    read_register,
-)
-
-
-# --- decoding -------------------------------------------------------------
-
-def test_decode_i32_negative():
-    # active_power as a signed 32-bit: -1500 W over two words
-    words = list(struct.unpack(">HH", struct.pack(">i", -1500)))
-    assert decode(words, Reg("active_power_w", 32080, 2, "i32", 1, "W")) == -1500
-
-
-def test_decode_u32_large():
-    words = list(struct.unpack(">HH", struct.pack(">I", 4600)))
-    assert decode(words, Reg("p", 40126, 2, "u32", 1, "W")) == 4600
+# A snapshot like the live read we captured (SUN2000-4.6KTL-L1).
+SAMPLE = {
+    "model_name": "SUN2000-4.6KTL-L1",
+    "device_status": "On-grid",
+    "input_power": 3167,
+    "active_power": 3098,
+    "grid_frequency": 50.01,
+    "internal_temperature": 49.2,
+    "active_power_control_mode": "Unlimited",
+    "active_power_percentage_derating": 100.0,
+    "active_power_fixed_value_derating": 50,
+    "p_max": 5000,
+    "default_active_power_change_gradient": 0.277,
+}
 
 
-def test_decode_i16_with_gain():
-    # internal temperature: raw 235, gain 10 -> 23.5 °C
-    assert decode([235], Reg("t", 32087, 1, "i16", 10, "°C")) == 23.5
+def test_defaults_point_at_wlan_ap():
+    assert DEFAULT_HOST == "192.168.200.1"
+    assert DEFAULT_PORT == 6607
 
 
-def test_decode_u16_with_gain():
-    # grid frequency: raw 5000, gain 100 -> 50.0 Hz
-    assert decode([5000], Reg("f", 32085, 1, "u16", 100, "Hz")) == 50.0
+def test_from_values_maps_fields():
+    r = from_values(SAMPLE)
+    assert r.model_name == "SUN2000-4.6KTL-L1"
+    assert r.active_power_w == 3098          # PV production
+    assert r.input_power_w == 3167
+    assert r.control_mode == "Unlimited"
+    assert r.percentage_derating == 100.0
+    assert r.p_max_w == 5000
+    assert r.power_change_gradient_pct_s == 0.277
 
 
-def test_decode_string_strips_nulls():
-    words = list(struct.unpack(">HHHH", b"SUN2\x00\x00\x00\x00"))
-    assert decode(words, Reg("model", 30000, 4, "string")) == "SUN2"
+def test_from_values_keeps_raw_and_tolerates_missing():
+    r = from_values({"active_power": 1000})
+    assert r.active_power_w == 1000
+    assert r.model_name is None              # missing -> None
+    assert r.raw == {"active_power": 1000}
 
 
-# --- framing --------------------------------------------------------------
-
-def test_build_read_request_bytes():
-    req = build_read_request(address=32080, count=2, unit=1, tx=7)
-    assert req == struct.pack(">HHHBBHH", 7, 0, 6, 1, 0x03, 32080, 2)
-
-
-def _response(words: list[int], unit: int = 1, func: int = 0x03, tx: int = 1) -> bytes:
-    data = b"".join(struct.pack(">H", w) for w in words)
-    length = 3 + len(data)  # unit + func + bytecount + data
-    return struct.pack(">HHHBBB", tx, 0, length, unit, func, len(data)) + data
-
-
-def test_parse_read_response_ok():
-    frame = _response([0x0000, 0x05DC])  # 1500
-    assert parse_read_response(frame, 2) == [0x0000, 0x05DC]
-
-
-def test_parse_read_response_exception_raises():
-    # exception response: func | 0x80, then exception code byte
-    frame = struct.pack(">HHHBBB", 1, 0, 3, 1, 0x83, 0x02)
-    with pytest.raises(ModbusError, match="exception code 2"):
-        parse_read_response(frame, 2)
-
-
-def test_parse_read_response_count_mismatch():
-    with pytest.raises(ModbusError, match="byte count"):
-        parse_read_response(_response([1, 2, 3]), expected_count=2)
-
-
-# --- full read path over a fake socket ------------------------------------
-
-class FakeSocket:
-    def __init__(self, response: bytes):
-        self._buf = response
-        self.sent = b""
-
-    def sendall(self, data: bytes) -> None:
-        self.sent += data
-
-    def recv(self, n: int) -> bytes:
-        chunk, self._buf = self._buf[:n], self._buf[n:]
-        return chunk
-
-
-def test_read_register_end_to_end():
-    reg = Reg("active_power_w", 32080, 2, "i32", 1, "W")
-    sock = FakeSocket(_response(list(struct.unpack(">HH", struct.pack(">i", -800)))))
-    assert read_register(sock, reg) == -800
-    # and it sent a well-formed request for that address/count
-    assert sock.sent == build_read_request(32080, 2, tx=1)
-
-
-# --- register map guards --------------------------------------------------
-
-def test_key_register_addresses_locked():
-    by_name = {r.name: r for r in DIAGNOSTIC}
-    assert by_name["active_power_w"].address == 32080
-    assert by_name["active_power_fixed_value_derating_w"].address == 40126
-    assert by_name["active_power_control_mode"].address == 47415
+def test_reading_is_frozen():
+    r = from_values(SAMPLE)
+    import dataclasses
+    try:
+        r.active_power_w = 0  # type: ignore[misc]
+    except dataclasses.FrozenInstanceError:
+        return
+    raise AssertionError("InverterReading should be frozen")

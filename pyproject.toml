@@ -7,6 +7,7 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+hw = ["huawei-solar>=3.0.6"]   # inverter access over built-in WLAN (Modbus 6607)
 
 [build-system]
 requires = ["setuptools>=68"]

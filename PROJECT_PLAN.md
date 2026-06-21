@@ -88,28 +88,37 @@ Non-energy adders ≈ **11.494** EURct/kWh (day) / **10.304** (night).
   `total_power_import_kwh`, `total_power_export_kwh`. Poll ~1 Hz.
 - Target the **v2** HTTPS + bearer-token API (v1 deprecated on new firmware).
 
-### Huawei SUN2000 (actuator) — Modbus-TCP (SDongle port 502, slave 1) or RS485
-Read map confirmed against `huawei-solar-lib`. Key registers:
-- **`active_power_w` (32080, I32, W)** — AC output = current PV production (read).
-- **`active_power_fixed_value_derating_w` (40126, U32, W)** — the **zero-export actuator**:
-  write `setpoint_W = active_power(32080) + p1.active_power_w` to cap production at the
-  measured load. Watts in, Watts out — matches the P1 directly.
-- `active_power_percentage_derating` (40125, I16, % ×10) — write `0` for **full shutdown**.
-- `active_power_control_mode` (47415) modes 5/6/7 = the inverter's *own* zero/limited export,
-  **but they need a Huawei DTSU666 meter** wired to the inverter. We have a HomeWizard P1, so
-  this path is closed → **zero-export is done in software** (P1 feedback → PI loop, ~2–5 s,
-  small import deadband, writing 40126).
-- ⚠️ **Verify on device:** (a) Modbus *write* may need "Modbus TCP (unrestricted)" enabled via
-  installer/FusionSolar; (b) whether 40126 takes effect directly or needs
-  `active_power_adjustment_mode` (35300) set first. The read-only diagnostic dumps both.
+### Huawei SUN2000 (actuator) — built-in WLAN, Modbus **6607** ✅ validated live
+**No SDongle, no Huawei meter, no installer Modbus-TCP toggle needed.** The inverter has no
+SDongle; it joins FusionSolar via its built-in WLAN. Third-party Modbus is reachable on the
+inverter's **Wi-Fi hotspot** (`SUN2000-<SN>` / `Changeme`) at **`192.168.200.1:6607`**, which
+uses a proprietary handshake — so we use the **`huawei-solar`** library (`smart_home.inverter`),
+not raw Modbus. (Raw Modbus-TCP 502 is closed; `smart_home.modbus_tcp` is kept for an
+RS485-to-TCP bridge fallback.)
+
+Deployment: the Pi **dual-homes** — `eth0` = home LAN (internet, P1, ENTSO-E),
+`wlan0` = inverter hotspot (`ipv4.never-default`, so internet stays on Ethernet).
+
+Confirmed live (SUN2000-4.6KTL-L1, `P_MAX = 5000 W`):
+- **Reads are unauthenticated** — model, `active_power` (PV output, 32080), control state, etc.
+- **Writes require an installer `login()`** (challenge/response, user `installer`) — confirmed
+  working; `set()` returned True and read-back confirmed the change.
+- Curtailment levers: **`active_power_percentage_derating` (40125, %)** and
+  **`active_power_fixed_value_derating_w` (40126, W)**. The % register is written directly
+  (no DTSU666 meter needed — the 47415 modes 5/6/7 *do* need a meter and are not used).
+- ⚠️ **Ramp rate matters:** `DEFAULT_ACTIVE_POWER_CHANGE_GRADIENT` (47677) ≈ **0.277 %/s** by
+  default → ~**3 min** for a 50% swing. Fine for 15-min price-slot curtailment; **too slow for
+  closed-loop zero-export tracking** → raise the gradient (47677 is writable) in Phase 4.
+- Zero-export setpoint (Phase 4): `setpoint_W = active_power(32080) + p1.active_power_w`.
 
 ---
 
 ## 4. Roadmap
 
-1. **Read-only telemetry** — P1 + inverter Modbus read; confirm register map; log net & PV power.
-   *(readers built — `p1.py`, `inverter.py`; on-device verification pending: Modbus reachable?
-   writes unlocked? does 40126 need 35300 set?)*
+1. **Read-only telemetry** — ✅ **done & validated live.** Inverter reads over WLAN 6607
+   (`inverter.py`, huawei-solar); `p1.py` for the P1. Confirmed: Modbus reachable via built-in
+   WLAN, writes unlocked with installer login, derating is effective but ramp-limited (0.277 %/s).
+   *(P1 still to be read on-device once the Pi is placed.)*
 2. **Price + economics engine + daily plan** — fetch ENTSO-E A44 day-ahead prices; compute
    `P_feedin`/`P_consume`; emit per-slot decision; persist the whole-day plan
    (`schedule.json`) refreshed once daily (~16:00 timer). Pure, unit-tested, no hardware.

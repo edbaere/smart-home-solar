@@ -23,11 +23,13 @@ src/smart_home/
   prices.py      # ENTSO-E day-ahead -> raw BELPEX -> daily Slot schedule
   schedule.py    # persisted whole-day plan (refresh daily, look up action_at(now))
   p1.py          # read-only HomeWizard P1 reader (net grid power)
-  inverter.py    # read-only Huawei SUN2000 Modbus reader (PV power, control state)
+  inverter.py    # Huawei SUN2000 reader over built-in WLAN 6607 (huawei-solar) [hw extra]
+  modbus_tcp.py  # generic raw Modbus-TCP reader (RS485-bridge / port-502 fallback)
 tests/           # offline unit tests
 ```
 
-Stdlib only — no third-party runtime dependencies.
+Core (economics/prices/schedule/p1) is stdlib-only. Inverter access uses `huawei-solar`
+(`pip install '.[hw]'`).
 
 ## Develop / test
 
@@ -67,14 +69,16 @@ reports a NORMAL fail-safe if the plan does not cover the current time.
 
 ## Hardware readers (Phase 1, read-only)
 
-Run on the Pi / local network. Read-only — these never write to the inverter.
+The inverter (a SUN2000-L1 with **no SDongle**) exposes Modbus on its **built-in Wi-Fi
+hotspot** at `192.168.200.1:6607`. The host must be on that Wi-Fi (the Pi dual-homes:
+Ethernet = home/internet, Wi-Fi = inverter AP). Reads are unauthenticated.
 
 ```bash
-python3 -m smart_home.p1 <p1-host-or-ip>            # net grid power (− = injecting)
-python3 -m smart_home.inverter <inverter-host-or-ip>  # PV power + control-state registers
+pip install '.[hw]'                     # huawei-solar (for the inverter reader)
+python3 -m smart_home.inverter          # defaults to 192.168.200.1:6607
+python3 -m smart_home.p1 <p1-host-or-ip> # net grid power (− = injecting)
 ```
 
-The inverter dump includes the current `active_power_control_mode` (47415),
-`active_power_fixed_value_derating_w` (40126, the zero-export actuator) and
-`active_power_adjustment_mode` (35300) — so we can see the control state before any write.
-Modbus-TCP may need enabling on the SDongle (FusionSolar / installer).
+The inverter dump shows PV output (`active_power`), `control_mode`, the derating registers
+(40125 %, 40126 W) and the **power-change gradient** (≈0.277 %/s — why curtailment ramps over
+~3 min). Curtailment writes (Phase 3+) require an installer `login()`.

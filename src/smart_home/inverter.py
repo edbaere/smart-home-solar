@@ -1,188 +1,114 @@
-"""Read-only Modbus-TCP reader for the Huawei SUN2000 inverter.
+"""Read-only Huawei SUN2000 reader over the inverter's built-in WLAN (Modbus 6607).
 
-Phase 1 is **read-only**: confirm connectivity, dump the register map, and inspect the
-current active-power control state — *before* any write is attempted (writes are Phase 3).
+This is the **validated** telemetry path (confirmed live on a SUN2000-4.6KTL-L1): connect a
+client to the inverter's Wi-Fi hotspot, reach it at ``192.168.200.1:6607``, and read via the
+``huawei-solar`` library, which speaks the proprietary 6607 handshake. No SDongle, no
+installer Modbus-TCP toggle, no Huawei power meter required.
 
-Stdlib only: a minimal Modbus-TCP client over a raw socket (function 0x03, read holding
-registers). The wire framing and value decoding are separated from socket I/O so they are
-testable without hardware.
+Reads are unauthenticated. *Writes* (curtailment, Phase 3+) require an installer
+``login()`` — confirmed working — and the inverter ramps power at
+``DEFAULT_ACTIVE_POWER_CHANGE_GRADIENT`` (≈0.277 %/s by default, ~3 min for a 50% swing).
 
-Register addresses/types/gains are taken from the ``huawei-solar-lib`` definitions.
-Key registers:
-  * ACTIVE_POWER (32080, I32, W)         — AC output = PV production we curtail
-  * INPUT_POWER  (32064, I32, W)         — DC input power
-  * 40126 ACTIVE_POWER_FIXED_VALUE_DERATING (U32, W)  — the zero-export actuator (Phase 4)
-  * 40125 ACTIVE_POWER_PERCENTAGE_DERATING  (I16, %)
-  * 47415 ACTIVE_POWER_CONTROL_MODE         (U16 enum)
-  * 35300 ACTIVE_POWER_ADJUSTMENT_MODE      (U16)
+The ``huawei-solar`` dependency is imported lazily inside :func:`read`, so this module (and
+the pure :func:`from_values`) import fine without it. Install with ``pip install '.[hw]'``.
 """
 
 from __future__ import annotations
 
-import socket
-import struct
+import asyncio
 import sys
-import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
-DEFAULT_PORT = 502
-DEFAULT_UNIT = 1
-_READ_HOLDING = 0x03
-
-# Decoded meaning of ACTIVE_POWER_CONTROL_MODE (reg 47415).
-CONTROL_MODE_NAMES = {
-    0: "Unlimited (default)",
-    1: "DI active scheduling",
-    5: "Zero-power grid connection (needs Huawei meter)",
-    6: "Power-limited grid connection, Watt (needs Huawei meter)",
-    7: "Power-limited grid connection, percent (needs Huawei meter)",
-}
-
-
-class ModbusError(RuntimeError):
-    """A Modbus protocol-level error (exception response or malformed frame)."""
+DEFAULT_HOST = "192.168.200.1"   # inverter built-in WLAN AP
+DEFAULT_PORT = 6607              # proprietary handshake (handled by huawei-solar)
 
 
 @dataclass(frozen=True)
-class Reg:
-    """A Huawei register definition."""
+class InverterReading:
+    """A telemetry + control-state snapshot from the inverter."""
 
-    name: str
-    address: int
-    count: int          # number of 16-bit registers
-    kind: str           # 'u16' | 'i16' | 'u32' | 'i32' | 'string'
-    gain: float = 1
-    unit: str | None = None
-    writable: bool = False
-
-
-# Read for telemetry.
-TELEMETRY: list[Reg] = [
-    Reg("model_name", 30000, 15, "string"),
-    Reg("device_status", 32089, 1, "u16"),
-    Reg("input_power_w", 32064, 2, "i32", 1, "W"),
-    Reg("active_power_w", 32080, 2, "i32", 1, "W"),          # AC output = PV production
-    Reg("grid_frequency_hz", 32085, 1, "u16", 100, "Hz"),
-    Reg("internal_temperature_c", 32087, 1, "i16", 10, "°C"),
-    Reg("pv1_voltage_v", 32016, 1, "i16", 10, "V"),
-    Reg("pv1_current_a", 32017, 1, "i16", 100, "A"),
-    Reg("power_meter_active_power_w", 37113, 2, "i32", 1, "W"),  # only valid w/ Huawei meter
-]
-
-# Read-only here, but these are the writable control registers (inspect current state).
-CONTROL_STATE: list[Reg] = [
-    Reg("active_power_adjustment_mode", 35300, 1, "u16", 1, None, writable=True),
-    Reg("active_power_percentage_derating", 40125, 1, "i16", 10, "%", writable=True),
-    Reg("active_power_fixed_value_derating_w", 40126, 2, "u32", 1, "W", writable=True),
-    Reg("active_power_control_mode", 47415, 1, "u16", 1, None, writable=True),
-]
-
-DIAGNOSTIC: list[Reg] = TELEMETRY + CONTROL_STATE
+    model_name: str | None = None
+    device_status: str | None = None
+    input_power_w: float | None = None              # DC input
+    active_power_w: float | None = None             # AC output = PV production
+    grid_frequency_hz: float | None = None
+    internal_temperature_c: float | None = None
+    control_mode: str | None = None                 # ACTIVE_POWER_CONTROL_MODE
+    percentage_derating: float | None = None        # 40125, %
+    fixed_value_derating_w: float | None = None     # 40126, W
+    p_max_w: float | None = None                    # rated power
+    power_change_gradient_pct_s: float | None = None  # 47677, %/s
+    raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
-# --- pure wire framing & decoding (no I/O) --------------------------------
-
-def build_read_request(address: int, count: int, unit: int = DEFAULT_UNIT, tx: int = 1) -> bytes:
-    """Build a Modbus-TCP 'read holding registers' (0x03) request frame."""
-    # MBAP: tx(2) proto(2)=0 len(2)=6 unit(1); PDU: func(1) addr(2) qty(2)
-    return struct.pack(">HHHBBHH", tx, 0, 6, unit, _READ_HOLDING, address, count)
-
-
-def parse_read_response(frame: bytes, expected_count: int) -> list[int]:
-    """Parse a full Modbus-TCP response frame into a list of 16-bit register words."""
-    if len(frame) < 9:
-        raise ModbusError(f"short response ({len(frame)} bytes)")
-    _tx, _proto, _length, _unit, func = struct.unpack(">HHHBB", frame[:8])
-    if func & 0x80:                       # exception response
-        raise ModbusError(f"modbus exception code {frame[8]}")
-    byte_count = frame[8]
-    if byte_count != expected_count * 2:
-        raise ModbusError(f"byte count {byte_count}, expected {expected_count * 2}")
-    data = frame[9 : 9 + byte_count]
-    if len(data) != byte_count:
-        raise ModbusError("truncated data")
-    return [struct.unpack(">H", data[i : i + 2])[0] for i in range(0, byte_count, 2)]
+def from_values(v: dict[str, Any]) -> InverterReading:
+    """Build an :class:`InverterReading` from a plain {register_name: value} dict (pure)."""
+    return InverterReading(
+        model_name=v.get("model_name"),
+        device_status=v.get("device_status"),
+        input_power_w=v.get("input_power"),
+        active_power_w=v.get("active_power"),
+        grid_frequency_hz=v.get("grid_frequency"),
+        internal_temperature_c=v.get("internal_temperature"),
+        control_mode=v.get("active_power_control_mode"),
+        percentage_derating=v.get("active_power_percentage_derating"),
+        fixed_value_derating_w=v.get("active_power_fixed_value_derating"),
+        p_max_w=v.get("p_max"),
+        power_change_gradient_pct_s=v.get("default_active_power_change_gradient"),
+        raw=v,
+    )
 
 
-def decode(words: list[int], reg: Reg):
-    """Decode register words per the register's type/gain."""
-    raw_bytes = b"".join(struct.pack(">H", w & 0xFFFF) for w in words)
-    if reg.kind == "string":
-        return raw_bytes.split(b"\x00", 1)[0].decode("ascii", "ignore").strip()
-    fmt = {"u16": ">H", "i16": ">h", "u32": ">I", "i32": ">i"}[reg.kind]
-    raw = struct.unpack(fmt, raw_bytes)[0]
-    return raw / reg.gain if reg.gain not in (1, 1.0) else raw
+async def read(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> InverterReading:
+    """Read telemetry + control state from the inverter (read-only)."""
+    from huawei_solar import create_device_instance, create_tcp_client  # noqa: PLC0415
+    from huawei_solar import register_names as rn  # noqa: PLC0415
+
+    names = {
+        "model_name": rn.MODEL_NAME,
+        "device_status": rn.DEVICE_STATUS,
+        "input_power": rn.INPUT_POWER,
+        "active_power": rn.ACTIVE_POWER,
+        "grid_frequency": rn.GRID_FREQUENCY,
+        "internal_temperature": rn.INTERNAL_TEMPERATURE,
+        "active_power_control_mode": rn.ACTIVE_POWER_CONTROL_MODE,
+        "active_power_percentage_derating": rn.ACTIVE_POWER_PERCENTAGE_DERATING,
+        "active_power_fixed_value_derating": rn.ACTIVE_POWER_FIXED_VALUE_DERATING,
+        "p_max": rn.P_MAX,
+        "default_active_power_change_gradient": rn.DEFAULT_ACTIVE_POWER_CHANGE_GRADIENT,
+    }
+    client = create_tcp_client(host=host, port=port)
+    device = await create_device_instance(client)
+    data = await device.batch_update(list(names.values()))
+    values = {
+        key: (getattr(data[reg], "value", None) if reg in data else None)
+        for key, reg in names.items()
+    }
+    return from_values(values)
 
 
-# --- socket I/O -----------------------------------------------------------
-
-def _recv_exact(sock: socket.socket, n: int) -> bytes:
-    buf = b""
-    while len(buf) < n:
-        chunk = sock.recv(n - len(buf))
-        if not chunk:
-            raise ModbusError("connection closed mid-frame")
-        buf += chunk
-    return buf
-
-
-def _read_frame(sock: socket.socket) -> bytes:
-    head = _recv_exact(sock, 6)              # tx, proto, length
-    _tx, _proto, length = struct.unpack(">HHH", head)
-    return head + _recv_exact(sock, length)
-
-
-def read_register(sock: socket.socket, reg: Reg, unit: int = DEFAULT_UNIT, tx: int = 1):
-    """Read and decode a single register over an open socket."""
-    sock.sendall(build_read_request(reg.address, reg.count, unit, tx))
-    return decode(parse_read_response(_read_frame(sock), reg.count), reg)
-
-
-def read_all(
-    host: str,
-    port: int = DEFAULT_PORT,
-    unit: int = DEFAULT_UNIT,
-    regs: list[Reg] = DIAGNOSTIC,
-    *,
-    timeout: float = 10.0,
-    connect_delay: float = 1.0,   # SUN2000 needs a moment after connect before first read
-    gap: float = 0.1,             # small pause between reads; the inverter dislikes bursts
-) -> dict[str, object]:
-    """Read every register in ``regs``; per-register errors are captured, not fatal."""
-    results: dict[str, object] = {}
-    with socket.create_connection((host, port), timeout=timeout) as sock:
-        sock.settimeout(timeout)
-        if connect_delay:
-            time.sleep(connect_delay)
-        tx = 0
-        for reg in regs:
-            tx = (tx % 0xFFFF) + 1
-            try:
-                results[reg.name] = read_register(sock, reg, unit, tx)
-            except (ModbusError, OSError) as exc:
-                results[reg.name] = f"ERROR: {exc}"
-            if gap:
-                time.sleep(gap)
-    return results
+def read_sync(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> InverterReading:
+    """Synchronous convenience wrapper around :func:`read`."""
+    return asyncio.run(read(host, port))
 
 
 def main(argv: list[str] | None = None) -> None:
     argv = sys.argv[1:] if argv is None else argv
-    if not argv:
-        print("usage: python -m smart_home.inverter <inverter-host-or-ip> [port]", file=sys.stderr)
-        sys.exit(1)
-    host = argv[0]
+    host = argv[0] if argv else DEFAULT_HOST
     port = int(argv[1]) if len(argv) > 1 else DEFAULT_PORT
-    results = read_all(host, port)
-    width = max(len(r.name) for r in DIAGNOSTIC)
-    by_name = {r.name: r for r in DIAGNOSTIC}
-    for name, value in results.items():
-        reg = by_name[name]
-        unit = f" {reg.unit}" if reg.unit and not isinstance(value, str) else ""
-        note = ""
-        if name == "active_power_control_mode" and isinstance(value, int):
-            note = f"  -> {CONTROL_MODE_NAMES.get(value, 'unknown')}"
-        print(f"  {name:<{width}}  ({reg.address})  {value}{unit}{note}")
+    r = read_sync(host, port)
+    print(f"model            : {r.model_name}")
+    print(f"device_status    : {r.device_status}")
+    print(f"input_power (DC) : {r.input_power_w} W")
+    print(f"active_power (AC): {r.active_power_w} W   <- PV production")
+    print(f"grid_frequency   : {r.grid_frequency_hz} Hz")
+    print(f"internal_temp    : {r.internal_temperature_c} °C")
+    print(f"P_MAX (rated)    : {r.p_max_w} W")
+    print(f"control_mode     : {r.control_mode}")
+    print(f"pct_derating     : {r.percentage_derating} %")
+    print(f"fixed_derating   : {r.fixed_value_derating_w} W")
+    print(f"power_gradient   : {r.power_change_gradient_pct_s} %/s")
 
 
 if __name__ == "__main__":
