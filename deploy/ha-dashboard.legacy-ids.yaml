@@ -1,0 +1,76 @@
+# Home Assistant dashboard — LEGACY entity-id variant.
+#
+# Use this only on an HA instance whose MQTT entities were created *before* the
+# `object_id: solar_*` discovery field was added (commit 44524c1). On those instances HA
+# kept the auto-derived ids `sensor.smart_home_curtailment_*` and ignores `object_id` on
+# every later republish (object_id only sets the entity_id at first creation).
+#
+# A FRESH HA install creates `sensor.solar_*` correctly -> use `ha-dashboard.yaml` instead.
+# To migrate an existing box to the clean names, rename the entities in the HA UI
+# (Settings -> Devices & Services -> MQTT device -> each entity -> Entity ID), then switch
+# back to `ha-dashboard.yaml`.
+
+title: Solar
+views:
+  - title: Overview
+    cards:
+      - type: glance
+        title: Now
+        entities:
+          - entity: sensor.smart_home_curtailment_curtailment_action
+            name: Action
+          - entity: sensor.smart_home_curtailment_day_ahead_price
+            name: Price
+          - entity: sensor.smart_home_curtailment_active_power_derating
+            name: Derating
+          - entity: sensor.smart_home_curtailment_target_derating
+            name: Target
+      - type: horizontal-stack
+        cards:
+          - type: gauge
+            entity: sensor.smart_home_curtailment_pv_production
+            name: PV
+            min: 0
+            max: 5000
+            severity:
+              green: 0
+              yellow: 4000
+              red: 4800
+          - type: gauge
+            entity: sensor.smart_home_curtailment_grid_net_power
+            name: Grid +imp/-exp
+            min: -5000
+            max: 5000
+          - type: gauge
+            entity: sensor.smart_home_curtailment_load
+            name: Load
+            min: 0
+            max: 5000
+      - type: history-graph
+        title: Power (24h)
+        hours_to_show: 24
+        entities:
+          - sensor.smart_home_curtailment_pv_production
+          - sensor.smart_home_curtailment_load
+          - sensor.smart_home_curtailment_grid_net_power
+      - type: entities
+        title: Detail
+        entities:
+          - entity: sensor.smart_home_curtailment_grid_l1
+            name: Grid L1
+          - entity: sensor.smart_home_curtailment_grid_l2
+            name: Grid L2
+          - entity: sensor.smart_home_curtailment_grid_l3
+            name: Grid L3
+          - entity: sensor.smart_home_curtailment_grid_import_total
+            name: Grid import total
+          - entity: sensor.smart_home_curtailment_grid_export_total
+            name: Grid export total
+          - entity: sensor.smart_home_curtailment_active_power_derating
+            name: Active power derating
+          - entity: sensor.smart_home_curtailment_target_derating
+            name: Target derating
+          - entity: sensor.smart_home_curtailment_day_ahead_price
+            name: Day-ahead price
+          - entity: sensor.smart_home_curtailment_curtailment_action
+            name: Curtailment action
