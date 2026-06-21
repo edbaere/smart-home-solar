@@ -48,12 +48,14 @@ Non-energy adders ≈ **11.494** EURct/kWh (day) / **10.304** (night).
 ## 2. Architecture — Hybrid
 
 ```
-                ┌────────────────────────┐
-  ENTSO-E API ─▶│  price + economics     │  A44 day-ahead (EUR/MWh)
- (day-ahead)    │  engine (pure Python)   │  → per-slot decision schedule
-                └───────────┬─────────────┘
-                            │ decision (FULL_CURTAIL / ZERO_EXPORT / NORMAL)
-                            ▼
+  ENTSO-E API        ┌─────────────────────┐
+  (A44 day-ahead) ──▶│  daily fetch job    │  runs ~16:00 (prices fixed once published)
+   once/day          │  prices + economics │  builds the WHOLE next day's plan
+                     └──────────┬──────────┘
+                                ▼
+                        schedule.json  (persisted plan: per-slot action)
+                                │  action_at(now)  — no network in the hot path
+                                ▼
    HomeWizard P1 ─────▶┌──────────────────┐──────▶ Huawei SUN2000
    net power (1 Hz)    │  control daemon  │ Modbus  active-power % (reg ~40125)
                        │  (PI loop +      │  TCP    (volatile setpoint)
@@ -65,8 +67,15 @@ Non-energy adders ≈ **11.494** EURct/kWh (day) / **10.304** (night).
                   native HomeWizard + wlcrs/huawei_solar integrations
 ```
 
-- **Python control daemon** owns the safety-critical loop (prices → decision → Modbus,
-  plus the closed-loop zero-export PI controller using P1 feedback).
+- **Day-ahead prices are fixed once published** (~13:00 CET, visible by 16:00), so a
+  **once-daily fetch job** builds the entire next-day plan and persists it (`schedule.json`,
+  atomic write). The control loop runs purely from this cached plan — a slot lookup, no
+  network in the hot path.
+- **Resilience:** if ENTSO-E is unreachable later in the day, the cached plan keeps running.
+  If the plan does not cover *now* (a fetch has failed too long), the control loop **fails
+  safe to NORMAL**.
+- **Python control daemon** owns the safety-critical loop (plan lookup → Modbus, plus the
+  closed-loop zero-export PI controller using P1 feedback).
 - **Home Assistant** (same Pi) for visualisation, history and alerts via native integrations.
 
 ---
@@ -93,8 +102,10 @@ Non-energy adders ≈ **11.494** EURct/kWh (day) / **10.304** (night).
 ## 4. Roadmap
 
 1. **Read-only telemetry** — P1 + inverter Modbus read; confirm register map; log net & PV power.
-2. **Price + economics engine** — fetch ENTSO-E A44 day-ahead prices; compute
-   `P_feedin`/`P_consume`; emit per-slot decision. Pure, unit-tested, no hardware.
+2. **Price + economics engine + daily plan** — fetch ENTSO-E A44 day-ahead prices; compute
+   `P_feedin`/`P_consume`; emit per-slot decision; persist the whole-day plan
+   (`schedule.json`) refreshed once daily (~16:00 timer). Pure, unit-tested, no hardware.
+   *(done)*
 3. **Actuation (fail-safe first)** — write active-power %; watchdog forces 100% on
    crash/stale-price/exception; test Rule 1 (FULL_CURTAIL on/off).
 4. **Zero-export loop** — closed-loop PI using P1 feedback for Rule 2.

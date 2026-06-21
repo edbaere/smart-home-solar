@@ -47,3 +47,17 @@ ENTSOE_API_TOKEN='your-token' PYTHONPATH=src python3 -m smart_home.prices
 Expected output — one row per slot (Brussels time) with BELPEX (EUR/MWh, taken verbatim),
 all-in consume price, feed-in revenue, and the resulting action. Tomorrow's prices appear
 after they're published (~13:00 CET).
+
+## Daily plan (cached, network-free control)
+
+Day-ahead prices are fixed once published, so we build the whole-day plan once and persist
+it; the control loop then reads only the cached plan.
+
+```bash
+ENTSOE_API_TOKEN='your-token' python3 -m smart_home.schedule refresh   # fetch + persist plan
+python3 -m smart_home.schedule now                                     # action for current slot
+```
+
+The plan is written to `~/.smart_home/schedule.json` (atomic write). On the Pi, drive
+`refresh` from a daily timer at ~16:00 (cron or a `systemd` timer). `now` exits non-zero and
+reports a NORMAL fail-safe if the plan does not cover the current time.
