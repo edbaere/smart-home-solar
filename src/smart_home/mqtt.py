@@ -50,6 +50,7 @@ def discovery_configs(
         cfg: dict[str, Any] = {
             "name": name,
             "unique_id": f"smart_home_{node_id}_{key}",
+            "object_id": f"solar_{key}",  # -> predictable entity_id sensor.solar_<key>
             "state_topic": state_topic,
             "value_template": f"{{{{ value_json.{key} }}}}",
             "device": device,

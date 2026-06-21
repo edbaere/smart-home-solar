@@ -1,44 +1,39 @@
 # Ready-to-paste Home Assistant dashboard for the smart_home entities.
-# In HA: Settings -> Dashboards -> (new dashboard) -> top-right ⋮ -> "Edit Dashboard"
-#        -> ⋮ -> "Raw configuration editor" -> paste this -> Save.
-# NOTE: entity_ids are HA's defaults from the MQTT discovery names. If a card shows
-# "entity not found", check Settings -> Devices & Services -> MQTT -> the device, and
-# adjust the sensor.* ids below to match.
-title: Solar Curtailment
+# Entity ids are fixed via MQTT discovery object_id (sensor.solar_*), so this pastes cleanly.
+# HA: Settings -> Dashboards -> (open/new) -> Edit (pencil) -> ⋮ -> Raw configuration editor
+#     -> replace all with this -> Save.
+title: Solar
 views:
   - title: Overview
     cards:
       - type: glance
         title: Now
         entities:
-          - entity: sensor.curtailment_action
+          - entity: sensor.solar_action
             name: Action
-          - entity: sensor.day_ahead_price
-            name: BELPEX
-          - entity: sensor.active_power_derating
+          - entity: sensor.solar_belpex
+            name: Price
+          - entity: sensor.solar_derating
             name: Derating
-          - entity: sensor.target_derating
+          - entity: sensor.solar_target_derating
             name: Target
 
       - type: horizontal-stack
         cards:
           - type: gauge
-            entity: sensor.pv_production
-            name: PV production
-            unit: W
+            entity: sensor.solar_pv_power
+            name: PV
             min: 0
             max: 5000
             severity: {green: 0, yellow: 4000, red: 4800}
           - type: gauge
-            entity: sensor.grid_net_power
-            name: Grid (+import/-export)
-            unit: W
+            entity: sensor.solar_grid_power
+            name: Grid +imp/-exp
             min: -5000
             max: 5000
           - type: gauge
-            entity: sensor.load
+            entity: sensor.solar_load_power
             name: Load
-            unit: W
             min: 0
             max: 5000
 
@@ -46,19 +41,19 @@ views:
         title: Power (24h)
         hours_to_show: 24
         entities:
-          - sensor.pv_production
-          - sensor.load
-          - sensor.grid_net_power
+          - sensor.solar_pv_power
+          - sensor.solar_load_power
+          - sensor.solar_grid_power
 
       - type: entities
         title: Detail
         entities:
-          - sensor.grid_l1
-          - sensor.grid_l2
-          - sensor.grid_l3
-          - sensor.grid_import_total
-          - sensor.grid_export_total
-          - sensor.active_power_derating
-          - sensor.target_derating
-          - sensor.day_ahead_price
-          - sensor.curtailment_action
+          - sensor.solar_l1_power
+          - sensor.solar_l2_power
+          - sensor.solar_l3_power
+          - sensor.solar_import_total
+          - sensor.solar_export_total
+          - sensor.solar_derating
+          - sensor.solar_target_derating
+          - sensor.solar_belpex
+          - sensor.solar_action
