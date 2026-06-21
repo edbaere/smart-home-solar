@@ -7,7 +7,6 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
-frank = ["python-frank-energie"]
 
 [build-system]
 requires = ["setuptools>=68"]

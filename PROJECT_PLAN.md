@@ -49,7 +49,7 @@ Non-energy adders ≈ **11.494** EURct/kWh (day) / **10.304** (night).
 
 ```
                 ┌────────────────────────┐
-  Frank API ───▶│  price + economics     │  fetch_prices.py wrapper
+  ENTSO-E API ─▶│  price + economics     │  A44 day-ahead (EUR/MWh)
  (day-ahead)    │  engine (pure Python)   │  → per-slot decision schedule
                 └───────────┬─────────────┘
                             │ decision (FULL_CURTAIL / ZERO_EXPORT / NORMAL)
@@ -93,8 +93,8 @@ Non-energy adders ≈ **11.494** EURct/kWh (day) / **10.304** (night).
 ## 4. Roadmap
 
 1. **Read-only telemetry** — P1 + inverter Modbus read; confirm register map; log net & PV power.
-2. **Price + economics engine** — wrap `fetch_prices.py`; compute `P_feedin`/`P_consume`;
-   emit per-slot decision. Pure, unit-tested, no hardware.
+2. **Price + economics engine** — fetch ENTSO-E A44 day-ahead prices; compute
+   `P_feedin`/`P_consume`; emit per-slot decision. Pure, unit-tested, no hardware.
 3. **Actuation (fail-safe first)** — write active-power %; watchdog forces 100% on
    crash/stale-price/exception; test Rule 1 (FULL_CURTAIL on/off).
 4. **Zero-export loop** — closed-loop PI using P1 feedback for Rule 2.
@@ -120,4 +120,4 @@ Non-energy adders ≈ **11.494** EURct/kWh (day) / **10.304** (night).
 - [ ] Confirm exact Huawei active-power register/mode for the L1 series.
 - [ ] Confirm Imewo day vs night grid tariff handling (and capacity/peak tariff impact when
       doing FULL_CURTAIL — avoid setting a new monthly import peak).
-- [ ] Frank API auth (`FRANK_ENERGIE_EMAIL` / `FRANK_ENERGIE_PASSWORD`) on the Pi.
+- [ ] ENTSO-E Web API token (`ENTSOE_API_TOKEN`) available on the Pi.

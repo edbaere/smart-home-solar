@@ -20,9 +20,11 @@ Given the day-ahead `BELPEX` (EUR/MWh):
 ```
 src/smart_home/
   economics.py   # pure decision engine (BELPEX -> Action)
-  prices.py      # Frank Energie -> raw BELPEX -> daily Slot schedule
+  prices.py      # ENTSO-E day-ahead -> raw BELPEX -> daily Slot schedule
 tests/           # offline unit tests
 ```
+
+Stdlib only — no third-party runtime dependencies.
 
 ## Develop / test
 
@@ -32,15 +34,16 @@ pytest          # runs the offline suite (no network, no hardware)
 
 ## Print today's real schedule
 
-Needs your Frank Energie login. Run in a terminal (keeps credentials out of any transcript):
+Day-ahead prices come from the [ENTSO-E Transparency Platform]
+(https://web-api.tp.entsoe.eu/api) (document type A44, bidding zone Belgium
+`10YBE----------2`). You need a Web API security token. No `pip install` needed:
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[frank]"
-FRANK_ENERGIE_EMAIL='you@example.com' \
-FRANK_ENERGIE_PASSWORD='...' \
-python -m smart_home.prices
+ENTSOE_API_TOKEN='your-token' python3 -m smart_home.prices
+# (from the repo root; src is on the path via pyproject's pytest config, or use:)
+ENTSOE_API_TOKEN='your-token' PYTHONPATH=src python3 -m smart_home.prices
 ```
 
-Expected output — one row per hour (Brussels time) with BELPEX, all-in consume price,
-feed-in revenue, and the resulting action.
+Expected output — one row per slot (Brussels time) with BELPEX (EUR/MWh, taken verbatim),
+all-in consume price, feed-in revenue, and the resulting action. Tomorrow's prices appear
+after they're published (~13:00 CET).
