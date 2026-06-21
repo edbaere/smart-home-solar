@@ -12,11 +12,11 @@ echo "[1/4] apt packages (git, python3-venv)"
 sudo apt-get update -qq
 sudo apt-get install -y -qq git python3-venv
 
-echo "[2/4] python venv + dependencies ([hw])"
+echo "[2/4] python venv + dependencies ([dev,hw,mqtt])"
 cd "$REPO"
 [ -d .venv ] || python3 -m venv .venv
 .venv/bin/pip install -q --upgrade pip
-.venv/bin/pip install -q -e ".[hw]"
+.venv/bin/pip install -q -e ".[dev,hw,mqtt]"
 
 echo "[3/4] wifi country (BE) + radio"
 sudo raspi-config nonint do_wifi_country BE || true
