@@ -8,6 +8,7 @@ dependencies = []
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 hw = ["huawei-solar>=3.0.6"]   # inverter access over built-in WLAN (Modbus 6607)
+mqtt = ["paho-mqtt>=2.0"]      # publish readings to Home Assistant via MQTT
 
 [build-system]
 requires = ["setuptools>=68"]

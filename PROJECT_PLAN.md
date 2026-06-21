@@ -142,8 +142,10 @@ Confirmed live (SUN2000-4.6KTL-L1, `P_MAX = 5000 W`):
 4. **Zero-export loop** — `controller.py` already caps at `load + margin` each cycle (with a
    deadband, gradient left at default). Closed-loop PI refinement / raising the 47677 gradient
    for faster tracking is a later tuning step.
-5. **Home Assistant + dashboards + alerting** — Pi publishes readings + decision via MQTT;
-   HA (separate box or this Pi on a ≥32 GB card) subscribes. Deploy as `systemd` services.
+5. **Home Assistant + dashboards + alerting** — Pi publishes readings + decision via MQTT
+   with HA auto-discovery (`mqtt.py`, published from the controller loop — sole inverter
+   client; `--dry-run` gives monitoring-only). HA (separate box, or this Pi on the 230 GB
+   card via Docker) subscribes. *(publisher built; broker + HA install pending.)*
 
 ---
 

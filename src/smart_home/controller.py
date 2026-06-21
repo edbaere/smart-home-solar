@@ -137,11 +137,22 @@ async def run(
     deadband_pct: float = DEFAULT_DEADBAND_PCT,
     dry_run: bool = False,
     once: bool = False,
+    mqtt_host: str | None = None,
+    mqtt_port: int = 1883,
+    mqtt_user: str | None = None,
+    mqtt_password: str | None = None,
+    node_id: str = "solarpi",
 ) -> None:
     from smart_home import p1 as p1_mod  # noqa: PLC0415
 
     inv = InverterClient(inverter_host, inverter_port, user, password)
     await inv.connect()
+    pub = None
+    if mqtt_host:
+        from smart_home.mqtt import Publisher  # noqa: PLC0415
+        pub = Publisher(mqtt_host, mqtt_port, mqtt_user, mqtt_password, node_id=node_id)
+        pub.connect()
+        log.info("MQTT publishing to %s:%d", mqtt_host, mqtt_port)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -150,8 +161,10 @@ async def run(
     try:
         while not stop.is_set():
             try:
+                now = datetime.now(BRUSSELS)
                 schedule = Schedule.load(plan_path)
-                action = resolve_action(schedule, datetime.now(BRUSSELS))
+                slot = schedule.action_at(now)
+                action = slot.action if slot is not None else Action.NORMAL  # fail-safe NORMAL
                 reading = await inv.read()
                 p1r = await asyncio.to_thread(p1_mod.read, p1_host)
                 step = plan_step(
@@ -164,13 +177,23 @@ async def run(
                     deadband_pct=deadband_pct,
                 )
                 log.info(
-                    "action=%s target=%.1f%% (cur=%.1f%%) write=%s prod=%sW net=%+dW :: %s",
+                    "action=%s target=%.1f%% (cur=%s%%) write=%s prod=%sW net=%+dW :: %s",
                     step.action.value, step.target_percent, reading["derating"],
                     step.should_write, reading["active_power"], int(p1r.active_power_w), step.reason,
                 )
                 if step.should_write and not dry_run:
                     await inv.set_derating(step.target_percent)
                     log.info("wrote derating=%.1f%%", step.target_percent)
+                    reading["derating"] = step.target_percent
+                if pub is not None:
+                    from smart_home.mqtt import state_payload  # noqa: PLC0415
+                    pub.publish_state(state_payload(
+                        action=action.value, derating_pct=reading["derating"],
+                        pv_power_w=reading["active_power"] or 0.0, grid_net_w=p1r.active_power_w,
+                        l1_w=p1r.active_power_l1_w, l2_w=p1r.active_power_l2_w, l3_w=p1r.active_power_l3_w,
+                        import_total_kwh=p1r.total_import_kwh, export_total_kwh=p1r.total_export_kwh,
+                        belpex=slot.belpex if slot is not None else None,
+                    ))
             except Exception:
                 log.exception("cycle failed -> fail-safe to %.0f%%", FULL_POWER_PCT)
                 if not dry_run:
@@ -185,6 +208,8 @@ async def run(
             except asyncio.TimeoutError:
                 pass
     finally:
+        if pub is not None:
+            pub.close()
         # leaving control -> restore full production so we never strand the inverter curtailed
         if not dry_run:
             log.info("shutting down -> restoring 100%%")
@@ -205,6 +230,10 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--deadband", type=float, default=DEFAULT_DEADBAND_PCT)
     ap.add_argument("--dry-run", action="store_true", help="compute + log, never write")
     ap.add_argument("--once", action="store_true", help="run a single cycle and exit")
+    ap.add_argument("--mqtt-host", default=os.environ.get("MQTT_HOST"), help="MQTT broker (enables HA publishing)")
+    ap.add_argument("--mqtt-port", type=int, default=int(os.environ.get("MQTT_PORT", "1883")))
+    ap.add_argument("--mqtt-user", default=os.environ.get("MQTT_USER"))
+    ap.add_argument("--node-id", default=os.environ.get("NODE_ID", "solarpi"))
     args = ap.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -220,6 +249,9 @@ def main(argv: list[str] | None = None) -> None:
         p1_host=args.p1_host, user=user, password=password,
         margin_w=args.margin, interval_s=args.interval, deadband_pct=args.deadband,
         dry_run=args.dry_run, once=args.once,
+        mqtt_host=args.mqtt_host, mqtt_port=args.mqtt_port,
+        mqtt_user=args.mqtt_user, mqtt_password=os.environ.get("MQTT_PW"),
+        node_id=args.node_id,
     ))
 
 
