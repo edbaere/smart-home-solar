@@ -1,0 +1,11 @@
+[Unit]
+Description=smart_home daily day-ahead plan refresh (ENTSO-E)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=solarpi
+WorkingDirectory=/home/solarpi/smart_home
+EnvironmentFile=/etc/smart_home.env
+ExecStart=/home/solarpi/smart_home/.venv/bin/python -m smart_home.schedule refresh

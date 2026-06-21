@@ -26,8 +26,11 @@ src/smart_home/
   inverter.py    # Huawei SUN2000 reader over built-in WLAN 6607 (huawei-solar) [hw extra]
   modbus_tcp.py  # generic raw Modbus-TCP reader (RS485-bridge / port-502 fallback)
   control.py     # compute derating % from action + live measurements (pure)
+  controller.py  # control daemon: apply plan -> inverter, fail-safe (Phase 3)
   status.py      # read-only pre-flight: live readings + setpoint preview (no writes)
 tests/           # offline unit tests
+deploy/          # systemd units + env template + Pi deploy guide
+scripts/         # bootstrap_pi.sh (post-flash Pi setup)
 ```
 
 Core (economics/prices/schedule/p1) is stdlib-only. Inverter access uses `huawei-solar`

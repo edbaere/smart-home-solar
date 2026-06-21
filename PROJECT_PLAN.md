@@ -136,9 +136,14 @@ Confirmed live (SUN2000-4.6KTL-L1, `P_MAX = 5000 W`):
    (`schedule.json`) refreshed once daily (~16:00 timer). Pure, unit-tested, no hardware.
    *(done)*
 3. **Actuation (fail-safe first)** — write active-power %; watchdog forces 100% on
-   crash/stale-price/exception; test Rule 1 (FULL_CURTAIL on/off).
-4. **Zero-export loop** — closed-loop PI using P1 feedback for Rule 2.
-5. **Home Assistant + dashboards + alerting**; deploy as `systemd` service on the Pi.
+   crash/stale-plan/exception. *(built: `controller.py` + systemd units in `deploy/` +
+   `scripts/bootstrap_pi.sh`; pure decision logic unit-tested; `--dry-run`/`--once` modes.
+   Live write-loop validation on the Pi pending.)*
+4. **Zero-export loop** — `controller.py` already caps at `load + margin` each cycle (with a
+   deadband, gradient left at default). Closed-loop PI refinement / raising the 47677 gradient
+   for faster tracking is a later tuning step.
+5. **Home Assistant + dashboards + alerting** — Pi publishes readings + decision via MQTT;
+   HA (separate box or this Pi on a ≥32 GB card) subscribes. Deploy as `systemd` services.
 
 ---
 

@@ -1,0 +1,9 @@
+[Unit]
+Description=Refresh the day-ahead plan daily (tomorrow's prices publish ~13:00 CET)
+
+[Timer]
+OnCalendar=*-*-* 16:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
