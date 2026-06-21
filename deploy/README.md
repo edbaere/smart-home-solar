@@ -69,6 +69,11 @@ MQTT** → broker `127.0.0.1`, port `1883`, no auth. The "Smart Home Curtailment
 entities appear automatically (retained discovery). Paste `deploy/ha-dashboard.yaml` into a new
 dashboard's raw config for ready-made gauges/graphs.
 
+> If your HA was first onboarded **before** the `object_id` discovery field (commit 44524c1),
+> its entities are named `sensor.smart_home_curtailment_*` and `ha-dashboard.yaml` (which uses
+> `sensor.solar_*`) shows no data. Use `deploy/ha-dashboard.legacy-ids.yaml` instead, or rename
+> the entities in the HA UI to the `solar_*` ids.
+
 **Going live later:** stop the dry-run publisher (`sudo systemctl disable --now
 smart_home-publisher`) and enable `smart_home-controller.service` (which writes), keeping the
 same MQTT publishing.
