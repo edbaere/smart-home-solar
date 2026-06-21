@@ -24,7 +24,8 @@ SENSORS: list[tuple[str, str, str | None, str | None, str | None]] = [
     ("l3_power",     "Grid L3",              "W",   "power",  "measurement"),
     ("import_total", "Grid import total",    "kWh", "energy", "total_increasing"),
     ("export_total", "Grid export total",    "kWh", "energy", "total_increasing"),
-    ("derating",     "Active power derating", "%",  None,     "measurement"),
+    ("derating",        "Active power derating", "%", None,   "measurement"),
+    ("target_derating", "Target derating",      "%",  None,   "measurement"),
     ("belpex",       "Day-ahead price",      "EUR/MWh", None, "measurement"),
     ("action",       "Curtailment action",   None,  None,     None),
 ]
@@ -67,6 +68,7 @@ def state_payload(
     *,
     action: str,
     derating_pct: float | None,
+    target_derating_pct: float | None = None,
     pv_power_w: float,
     grid_net_w: float,
     l1_w: float | None = None,
@@ -87,6 +89,7 @@ def state_payload(
         "import_total": import_total_kwh,
         "export_total": export_total_kwh,
         "derating": derating_pct,
+        "target_derating": target_derating_pct,
         "belpex": belpex,
         "action": action,
     }

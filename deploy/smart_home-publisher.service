@@ -1,0 +1,15 @@
+[Unit]
+Description=smart_home dry-run publisher (monitoring to MQTT, no inverter writes)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=solarpi
+WorkingDirectory=/home/solarpi/smart_home
+ExecStart=/home/solarpi/smart_home/.venv/bin/python -m smart_home.controller --p1-host 192.168.3.74 --mqtt-host localhost --dry-run
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

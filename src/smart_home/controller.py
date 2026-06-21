@@ -189,6 +189,7 @@ async def run(
                     from smart_home.mqtt import state_payload  # noqa: PLC0415
                     pub.publish_state(state_payload(
                         action=action.value, derating_pct=reading["derating"],
+                        target_derating_pct=step.target_percent,
                         pv_power_w=reading["active_power"] or 0.0, grid_net_w=p1r.active_power_w,
                         l1_w=p1r.active_power_l1_w, l2_w=p1r.active_power_l2_w, l3_w=p1r.active_power_l3_w,
                         import_total_kwh=p1r.total_import_kwh, export_total_kwh=p1r.total_export_kwh,

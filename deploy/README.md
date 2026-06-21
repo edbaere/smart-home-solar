@@ -43,3 +43,24 @@ systemctl list-timers smart_home-refresh.timer
 set -a; source /etc/smart_home.env; set +a
 .venv/bin/python -m smart_home.controller --p1-host "$P1_HOST" --dry-run --once
 ```
+
+## Monitoring stack (Home Assistant + MQTT)
+
+`docker-compose.yml` runs **Mosquitto** + **Home Assistant** (host networking).
+`smart_home-publisher.service` runs the controller in **`--dry-run`** (reads + publishes to
+MQTT every 30 s, never writes) so HA shows live data before actuation is enabled.
+
+```bash
+cd deploy && docker compose up -d                       # Mosquitto + Home Assistant
+sudo cp deploy/smart_home-publisher.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now smart_home-publisher
+```
+
+In HA (`http://<pi-ip>:8123`): onboard → **Settings → Devices & Services → Add Integration →
+MQTT** → broker `127.0.0.1`, port `1883`, no auth. The "Smart Home Curtailment" device and its
+entities appear automatically (retained discovery). Paste `deploy/ha-dashboard.yaml` into a new
+dashboard's raw config for ready-made gauges/graphs.
+
+**Going live later:** stop the dry-run publisher (`sudo systemctl disable --now
+smart_home-publisher`) and enable `smart_home-controller.service` (which writes), keeping the
+same MQTT publishing.

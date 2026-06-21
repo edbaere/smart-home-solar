@@ -8,6 +8,7 @@ def test_discovery_has_a_config_per_sensor():
     assert len(cfgs) == len(SENSORS)
     # topics follow HA discovery convention
     assert "homeassistant/sensor/smart_home_solarpi/pv_power/config" in cfgs
+    assert "homeassistant/sensor/smart_home_solarpi/target_derating/config" in cfgs
 
 
 def test_discovery_payload_shape():
@@ -40,6 +41,13 @@ def test_state_payload_computes_load_and_rounds():
     assert p["load_power"] == round(2870.4 - 2335.2)   # pv + grid_net
     assert p["action"] == "ZERO_EXPORT"
     assert p["belpex"] == 5.0
+
+
+def test_state_payload_includes_target_derating():
+    p = state_payload(action="ZERO_EXPORT", derating_pct=100.0, target_derating_pct=29.3,
+                      pv_power_w=3000, grid_net_w=-1700)
+    assert p["derating"] == 100.0          # actual
+    assert p["target_derating"] == 29.3    # what it would set
 
 
 def test_state_payload_tolerates_missing_phases():
