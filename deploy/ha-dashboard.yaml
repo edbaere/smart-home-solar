@@ -6,6 +6,13 @@ title: Solar
 views:
   - title: Overview
     cards:
+      # Gate curtailment writes from HA. OFF (default) = monitoring only, inverter at full
+      # power; ON = execute the planned derating. State persists across restarts.
+      - type: tile
+        entity: switch.solar_curtail_enable
+        name: Curtailment control
+        icon: mdi:transmission-tower-export
+
       - type: glance
         title: Now
         entities:
@@ -45,11 +52,13 @@ views:
           - sensor.solar_load_power
           - sensor.solar_grid_power
 
-      # Full day-ahead plan (today + tomorrow once published ~13:00 CET), coloured by the
-      # decided curtailment action. Requires the HACS "apexcharts-card" custom card:
-      # HACS -> Frontend -> search "apexcharts-card" -> install -> reload.
-      # The future part of the curve comes from sensor.solar_forecast's `points` attribute
-      # (the whole cached plan), not from streamed history — so it shows before time passes.
+      # Full day-ahead plan (today + tomorrow once published ~13:00 CET). The price is shown as
+      # bars; the *curtailment schedule* is overlaid as translucent full-height bands (orange =
+      # ZERO_EXPORT, red = FULL_CURTAIL) on a hidden 0..1 axis, so it stays visible even where
+      # the price (and bar) is near zero — which is exactly when curtailment happens.
+      # Requires the HACS "apexcharts-card" custom card (or the card JS dropped in www/ and
+      # registered as a dashboard resource). The future curve comes from
+      # sensor.solar_forecast's `points` attribute (the whole cached plan), not streamed history.
       - type: custom:apexcharts-card
         header:
           show: true
@@ -61,32 +70,50 @@ views:
           show: true
           label: now
         yaxis:
-          - decimals: 0
+          - id: price
+            decimals: 0
             apex_config:
               title:
                 text: EUR/MWh
+          - id: flag
+            show: false
+            min: 0
+            max: 1
+            opposite: true
         series:
           - entity: sensor.solar_forecast
-            name: Normal
+            name: Price
             type: column
+            yaxis_id: price
             color: "#26a69a"
             data_generator: |
-              return (entity.attributes.points || [])
-                .filter(x => x.a === 'NORMAL').map(x => [x.t, x.p]);
+              return (entity.attributes.points || []).map(x => [x.t, x.p]);
           - entity: sensor.solar_forecast
             name: Zero export
-            type: column
+            type: area
+            yaxis_id: flag
             color: "#ffa726"
+            opacity: 0.28
+            stroke_width: 0
+            curve: stepline
+            show:
+              legend_value: false
             data_generator: |
               return (entity.attributes.points || [])
-                .filter(x => x.a === 'ZERO_EXPORT').map(x => [x.t, x.p]);
+                .map(x => [x.t, x.a === 'ZERO_EXPORT' ? 1 : 0]);
           - entity: sensor.solar_forecast
             name: Full curtail
-            type: column
+            type: area
+            yaxis_id: flag
             color: "#ef5350"
+            opacity: 0.33
+            stroke_width: 0
+            curve: stepline
+            show:
+              legend_value: false
             data_generator: |
               return (entity.attributes.points || [])
-                .filter(x => x.a === 'FULL_CURTAIL').map(x => [x.t, x.p]);
+                .map(x => [x.t, x.a === 'FULL_CURTAIL' ? 1 : 0]);
 
       - type: entities
         title: Detail

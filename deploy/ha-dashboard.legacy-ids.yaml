@@ -14,6 +14,13 @@ title: Solar
 views:
   - title: Overview
     cards:
+      # Gate curtailment writes from HA. OFF (default) = monitoring only, inverter at full
+      # power; ON = execute the planned derating. State persists across restarts.
+      - type: tile
+        entity: switch.smart_home_curtailment_curtailment_control
+        name: Curtailment control
+        icon: mdi:transmission-tower-export
+
       - type: glance
         title: Now
         entities:
@@ -53,6 +60,68 @@ views:
           - sensor.smart_home_curtailment_pv_production
           - sensor.smart_home_curtailment_load
           - sensor.smart_home_curtailment_grid_net_power
+
+      # Full day-ahead plan (today + tomorrow once published ~13:00 CET). The price is shown as
+      # bars; the *curtailment schedule* is overlaid as translucent full-height bands (orange =
+      # ZERO_EXPORT, red = FULL_CURTAIL) on a hidden 0..1 axis, so it stays visible even where
+      # the price (and bar) is near zero — which is exactly when curtailment happens.
+      # Requires the HACS "apexcharts-card" custom card (or the card JS dropped in www/ and
+      # registered as a dashboard resource).
+      - type: custom:apexcharts-card
+        header:
+          show: true
+          title: Day-ahead plan (forecast)
+        graph_span: 2d
+        span:
+          start: day
+        now:
+          show: true
+          label: now
+        yaxis:
+          - id: price
+            decimals: 0
+            apex_config:
+              title:
+                text: EUR/MWh
+          - id: flag
+            show: false
+            min: 0
+            max: 1
+            opposite: true
+        series:
+          - entity: sensor.smart_home_curtailment_day_ahead_forecast
+            name: Price
+            type: column
+            yaxis_id: price
+            color: "#26a69a"
+            data_generator: |
+              return (entity.attributes.points || []).map(x => [x.t, x.p]);
+          - entity: sensor.smart_home_curtailment_day_ahead_forecast
+            name: Zero export
+            type: area
+            yaxis_id: flag
+            color: "#ffa726"
+            opacity: 0.28
+            stroke_width: 0
+            curve: stepline
+            show:
+              legend_value: false
+            data_generator: |
+              return (entity.attributes.points || [])
+                .map(x => [x.t, x.a === 'ZERO_EXPORT' ? 1 : 0]);
+          - entity: sensor.smart_home_curtailment_day_ahead_forecast
+            name: Full curtail
+            type: area
+            yaxis_id: flag
+            color: "#ef5350"
+            opacity: 0.33
+            stroke_width: 0
+            curve: stepline
+            show:
+              legend_value: false
+            data_generator: |
+              return (entity.attributes.points || [])
+                .map(x => [x.t, x.a === 'FULL_CURTAIL' ? 1 : 0]);
       - type: entities
         title: Detail
         entities:
