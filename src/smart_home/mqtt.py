@@ -12,6 +12,7 @@ inside :class:`Publisher`; install with ``pip install '.[mqtt]'``.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any
 
 # key, friendly name, HA unit, device_class, state_class  (None where N/A)
@@ -96,6 +97,55 @@ def state_payload(
     }
 
 
+# --- day-ahead plan / forecast --------------------------------------------
+#
+# The streamed ``state`` topic only ever carries the *current* slot, so HA history can never
+# show the future part of the curve. We additionally publish the whole cached plan to a retained
+# ``plan`` topic as a single forecast sensor: its state is the slot count, and the full
+# per-slot array (time, price, decided action) rides along as attributes for a chart card to
+# read. We colour by the *decided action* — not a price cutoff — because the thresholds are
+# derived from the tariff card (and differ night vs day), so the action is the source of truth.
+
+def plan_discovery_config(
+    node_id: str, plan_topic: str, discovery_prefix: str = "homeassistant"
+) -> dict[str, dict[str, Any]]:
+    """Return the {config_topic: payload} HA-discovery message for the forecast sensor."""
+    cfg = {
+        "name": "Day-ahead forecast",
+        "unique_id": f"smart_home_{node_id}_forecast",
+        "object_id": "solar_forecast",  # -> sensor.solar_forecast
+        "state_topic": plan_topic,
+        "value_template": "{{ value_json.slot_count }}",
+        "json_attributes_topic": plan_topic,
+        "icon": "mdi:chart-timeline-variant",
+        "device": _device(node_id),
+    }
+    return {f"{discovery_prefix}/sensor/smart_home_{node_id}/forecast/config": cfg}
+
+
+def plan_payload(slots: list[Any]) -> dict[str, Any]:
+    """Build the retained forecast payload from the cached plan's slots.
+
+    ``points`` is a list of ``{t, p, a}`` (epoch ms, BELPEX EUR/MWh, action string) — a chart
+    card can split it into one series per action for colour-by-action without re-deriving
+    thresholds. Slots carry an ISO-8601 ``start`` with a Brussels offset.
+    """
+    points = [
+        {
+            "t": int(datetime.fromisoformat(s.start).timestamp() * 1000),
+            "p": round(s.belpex, 2),
+            "a": s.action.value,
+        }
+        for s in slots
+    ]
+    return {
+        "slot_count": len(slots),
+        "covers_start": slots[0].start if slots else None,
+        "covers_end": slots[-1].start if slots else None,
+        "points": points,
+    }
+
+
 class Publisher:
     """Thin MQTT wrapper: connect, publish HA discovery once, publish state per cycle."""
 
@@ -113,6 +163,7 @@ class Publisher:
         self._node_id = node_id
         self._discovery_prefix = discovery_prefix
         self._state_topic = f"smart_home/{node_id}/state"
+        self._plan_topic = f"smart_home/{node_id}/plan"
         self._client = None
 
     def connect(self) -> None:
@@ -125,10 +176,17 @@ class Publisher:
         self._client.loop_start()
         for topic, payload in discovery_configs(self._node_id, self._state_topic, self._discovery_prefix).items():
             self._client.publish(topic, json.dumps(payload), retain=True)
+        for topic, payload in plan_discovery_config(self._node_id, self._plan_topic, self._discovery_prefix).items():
+            self._client.publish(topic, json.dumps(payload), retain=True)
 
     def publish_state(self, payload: dict[str, Any]) -> None:
         if self._client is not None:
             self._client.publish(self._state_topic, json.dumps(payload), retain=True)
+
+    def publish_plan(self, payload: dict[str, Any]) -> None:
+        """Publish the full day-ahead plan (retained) for the forecast chart."""
+        if self._client is not None:
+            self._client.publish(self._plan_topic, json.dumps(payload), retain=True)
 
     def close(self) -> None:
         if self._client is not None:

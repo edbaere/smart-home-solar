@@ -45,6 +45,49 @@ views:
           - sensor.solar_load_power
           - sensor.solar_grid_power
 
+      # Full day-ahead plan (today + tomorrow once published ~13:00 CET), coloured by the
+      # decided curtailment action. Requires the HACS "apexcharts-card" custom card:
+      # HACS -> Frontend -> search "apexcharts-card" -> install -> reload.
+      # The future part of the curve comes from sensor.solar_forecast's `points` attribute
+      # (the whole cached plan), not from streamed history — so it shows before time passes.
+      - type: custom:apexcharts-card
+        header:
+          show: true
+          title: Day-ahead plan (forecast)
+        graph_span: 2d
+        span:
+          start: day
+        now:
+          show: true
+          label: now
+        yaxis:
+          - decimals: 0
+            apex_config:
+              title:
+                text: EUR/MWh
+        series:
+          - entity: sensor.solar_forecast
+            name: Normal
+            type: column
+            color: "#26a69a"
+            data_generator: |
+              return (entity.attributes.points || [])
+                .filter(x => x.a === 'NORMAL').map(x => [x.t, x.p]);
+          - entity: sensor.solar_forecast
+            name: Zero export
+            type: column
+            color: "#ffa726"
+            data_generator: |
+              return (entity.attributes.points || [])
+                .filter(x => x.a === 'ZERO_EXPORT').map(x => [x.t, x.p]);
+          - entity: sensor.solar_forecast
+            name: Full curtail
+            type: column
+            color: "#ef5350"
+            data_generator: |
+              return (entity.attributes.points || [])
+                .filter(x => x.a === 'FULL_CURTAIL').map(x => [x.t, x.p]);
+
       - type: entities
         title: Detail
         entities:

@@ -1,6 +1,13 @@
 """Tests for the MQTT discovery + state builders (pure — no broker, no paho)."""
 
-from smart_home.mqtt import SENSORS, discovery_configs, state_payload
+from smart_home.economics import Slot
+from smart_home.mqtt import (
+    SENSORS,
+    discovery_configs,
+    plan_discovery_config,
+    plan_payload,
+    state_payload,
+)
 
 
 def test_discovery_has_a_config_per_sensor():
@@ -54,3 +61,41 @@ def test_state_payload_tolerates_missing_phases():
     p = state_payload(action="NORMAL", derating_pct=100.0, pv_power_w=1000, grid_net_w=-50)
     assert p["l1_power"] is None
     assert p["import_total"] is None
+
+
+# --- forecast / plan ------------------------------------------------------
+
+def _slot(start, belpex):
+    return Slot.from_belpex(start, belpex)
+
+
+def test_plan_discovery_uses_plan_topic_and_json_attributes():
+    cfgs = plan_discovery_config("solarpi", "smart_home/solarpi/plan")
+    cfg = cfgs["homeassistant/sensor/smart_home_solarpi/forecast/config"]
+    assert cfg["object_id"] == "solar_forecast"
+    assert cfg["state_topic"] == "smart_home/solarpi/plan"
+    assert cfg["json_attributes_topic"] == "smart_home/solarpi/plan"
+    assert cfg["value_template"] == "{{ value_json.slot_count }}"
+
+
+def test_plan_payload_shape_and_epoch_ms():
+    slots = [
+        _slot("2026-06-27T00:00:00+02:00", 80.0),
+        _slot("2026-06-27T00:15:00+02:00", -200.0),
+    ]
+    p = plan_payload(slots)
+    assert p["slot_count"] == 2
+    assert p["covers_start"] == "2026-06-27T00:00:00+02:00"
+    assert p["covers_end"] == "2026-06-27T00:15:00+02:00"
+    # 2026-06-27T00:00:00+02:00 == 2026-06-26T22:00:00Z
+    assert p["points"][0]["t"] == 1782511200000
+    assert p["points"][1]["t"] - p["points"][0]["t"] == 15 * 60 * 1000
+    # each point carries the price and the *decided* action (source of truth for colour)
+    assert p["points"][0]["p"] == 80.0
+    assert p["points"][0]["a"] == slots[0].action.value
+    assert p["points"][1]["a"] == slots[1].action.value
+
+
+def test_plan_payload_empty():
+    p = plan_payload([])
+    assert p == {"slot_count": 0, "covers_start": None, "covers_end": None, "points": []}

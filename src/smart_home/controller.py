@@ -182,7 +182,7 @@ async def run(
         pub.connect()
         log.info("MQTT publishing to %s:%d", mqtt_host, mqtt_port)
     if pub is not None:
-        from smart_home.mqtt import state_payload  # noqa: PLC0415
+        from smart_home.mqtt import plan_payload, state_payload  # noqa: PLC0415
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -194,6 +194,7 @@ async def run(
     target_pct = FULL_POWER_PCT
     derating_pct: float | None = None
     belpex: float | None = None
+    last_plan_sig: tuple | None = None  # republish the forecast only when the plan changes
     tick = 0
 
     try:
@@ -211,6 +212,22 @@ async def run(
                     slot = schedule.action_at(now)
                     action = slot.action if slot is not None else Action.NORMAL  # fail-safe NORMAL
                     belpex = slot.belpex if slot is not None else None
+                    # Publish the full plan for the HA forecast chart, but only when it changes
+                    # (once per daily refresh) — not every control tick. Guarded so a publish
+                    # hiccup never trips the control fail-safe.
+                    if pub is not None and schedule.slots:
+                        cur_sig = (
+                            len(schedule.slots),
+                            schedule.slots[0].start,
+                            schedule.slots[-1].start,
+                        )
+                        if cur_sig != last_plan_sig:
+                            try:
+                                pub.publish_plan(plan_payload(schedule.slots))
+                                last_plan_sig = cur_sig
+                                log.info("published plan: %d slots %s..%s", *cur_sig)
+                            except Exception:
+                                log.debug("plan publish failed", exc_info=True)
                     reading = await inv.read()
                     p1r = await asyncio.to_thread(p1_mod.read, p1_host)
                     pv = reading["active_power"]
