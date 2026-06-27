@@ -61,3 +61,22 @@ def compute_setpoint(
     target_w = max(0.0, load_w + margin_w)
     pct = max(0.0, min(100.0, target_w / p_max_w * 100.0))
     return Setpoint(action, round(pct, 1), target_w, "zero-export: cap at load + margin")
+
+
+def injection_limit_percent(
+    injection_target_w: float,
+    *,
+    inverter_active_power_w: float,
+    p1_net_w: float,
+    p_max_w: float,
+) -> float:
+    """Derating % that caps grid export (injection) at ``injection_target_w`` watts.
+
+    Closed loop: ``load = inverter_active_power_w + p1_net_w``; to hold export at the target we
+    need inverter output ``load + injection_target_w`` (then net grid = -target = exporting
+    ``target`` W). Below that production level no curtailment is needed (output stays at 100%).
+    Recomputed each control tick from live measurements as load changes.
+    """
+    load_w = inverter_active_power_w + p1_net_w
+    target_w = max(0.0, load_w + injection_target_w)
+    return round(max(0.0, min(100.0, target_w / p_max_w * 100.0)), 1)

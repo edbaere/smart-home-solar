@@ -4,6 +4,8 @@ from smart_home.economics import Slot
 from smart_home.mqtt import (
     SENSORS,
     discovery_configs,
+    injection_limit_discovery_config,
+    injection_target_discovery_config,
     manual_number_discovery_config,
     manual_override_discovery_config,
     plan_discovery_config,
@@ -139,3 +141,24 @@ def test_manual_number_discovery_is_a_percent_number():
     assert cfg["max"] == 100
     assert cfg["unit_of_measurement"] == "%"
     assert cfg["command_topic"] == "smart_home/solarpi/manual_pct/set"
+
+
+# --- injection limit ------------------------------------------------------
+
+def test_injection_limit_switch_discovery():
+    cfgs = injection_limit_discovery_config(
+        "solarpi", "smart_home/solarpi/injection/set", "smart_home/solarpi/injection/state"
+    )
+    cfg = cfgs["homeassistant/switch/smart_home_solarpi/injection_limit/config"]
+    assert cfg["unique_id"] == "smart_home_solarpi_injection_limit"
+    assert cfg["command_topic"] == "smart_home/solarpi/injection/set"
+
+
+def test_injection_target_discovery_is_a_watt_number():
+    cfgs = injection_target_discovery_config(
+        "solarpi", "smart_home/solarpi/injection_w/set", "smart_home/solarpi/injection_w/state"
+    )
+    cfg = cfgs["homeassistant/number/smart_home_solarpi/injection_target/config"]
+    assert cfg["min"] == 0
+    assert cfg["max"] == 5000
+    assert cfg["unit_of_measurement"] == "W"

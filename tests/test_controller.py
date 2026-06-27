@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 
 from smart_home.controller import (
     resolve_action, plan_step, control_every, Step, CurtailGate, ManualOverride,
+    InjectionOverride,
 )
 from smart_home.economics import Action, Slot
 from smart_home.schedule import Schedule
@@ -133,3 +134,29 @@ def test_manual_override_clamps_pct(tmp_path):
     assert m.pct == 100.0
     m.set_pct(-5)
     assert m.pct == 0.0
+
+
+# --- injection override ---------------------------------------------------
+
+def test_injection_override_defaults_off_zero(tmp_path):
+    inj = InjectionOverride(tmp_path / "inj")
+    assert inj.enabled is False
+    assert inj.target_w == 0.0
+
+
+def test_injection_override_enabled_never_persists_target_does(tmp_path):
+    path = tmp_path / "inj"
+    inj = InjectionOverride(path)
+    inj.set_enabled(True)
+    inj.set_target(1500)
+    reloaded = InjectionOverride(path)
+    assert reloaded.enabled is False      # reverts on restart
+    assert reloaded.target_w == 1500.0    # remembered
+
+
+def test_injection_override_clamps_target(tmp_path):
+    inj = InjectionOverride(tmp_path / "inj")
+    inj.set_target(99999)
+    assert inj.target_w == 5000.0
+    inj.set_target(-100)
+    assert inj.target_w == 0.0

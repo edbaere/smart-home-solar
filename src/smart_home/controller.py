@@ -45,7 +45,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from smart_home.control import DEFAULT_MARGIN_W, compute_setpoint
+from smart_home.control import DEFAULT_MARGIN_W, compute_setpoint, injection_limit_percent
 from smart_home.economics import Action
 from smart_home.schedule import DEFAULT_PATH, Schedule
 
@@ -56,6 +56,8 @@ DEFAULT_INTERVAL_S = 30.0           # control-decision cadence
 DEFAULT_TELEMETRY_INTERVAL_S = 1.0  # MQTT publish / fast-read cadence
 DEFAULT_CURTAIL_STATE_PATH = Path.home() / ".smart_home" / "curtail_enabled"
 DEFAULT_MANUAL_STATE_PATH = Path.home() / ".smart_home" / "manual_derating"
+DEFAULT_INJECTION_STATE_PATH = Path.home() / ".smart_home" / "injection_target"
+MAX_INJECTION_W = 5000.0
 
 log = logging.getLogger("smart_home.controller")
 
@@ -119,6 +121,41 @@ class ManualOverride:
 
 def _clamp_pct(pct: float) -> float:
     return max(0.0, min(100.0, pct))
+
+
+class InjectionOverride:
+    """Manual grid-export (injection) limit. When ``enabled`` the controller closed-loops the
+    inverter so export holds at ``target_w`` watts, ignoring the plan.
+
+    Like :class:`ManualOverride`, ``enabled`` is not persisted (reverts to OFF on restart);
+    ``target_w`` is persisted for convenience.
+    """
+
+    def __init__(self, path: Path = DEFAULT_INJECTION_STATE_PATH):
+        self._path = Path(path)
+        self.enabled = False
+        self.target_w = self._load_target()
+
+    def _load_target(self) -> float:
+        try:
+            return _clamp_w(float(self._path.read_text().strip()))
+        except (FileNotFoundError, ValueError):
+            return 0.0
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.enabled = enabled
+
+    def set_target(self, watts: float) -> None:
+        self.target_w = _clamp_w(watts)
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._path.write_text(f"{self.target_w:g}")
+        except Exception:
+            log.exception("failed to persist injection target")
+
+
+def _clamp_w(watts: float) -> float:
+    return max(0.0, min(MAX_INJECTION_W, watts))
 
 
 # --- pure decision logic (no I/O) -----------------------------------------
@@ -236,13 +273,15 @@ async def run(
     node_id: str = "solarpi",
     curtail_state_path: Path = DEFAULT_CURTAIL_STATE_PATH,
     manual_state_path: Path = DEFAULT_MANUAL_STATE_PATH,
+    injection_state_path: Path = DEFAULT_INJECTION_STATE_PATH,
 ) -> None:
     from smart_home import p1 as p1_mod  # noqa: PLC0415
 
     # Runtime gate: when disabled, behave like dry-run (compute + show, never curtail).
     # `--dry-run` is a hard override that disables writing regardless of the gate.
     gate = CurtailGate(curtail_state_path)
-    manual = ManualOverride(manual_state_path)  # enabled starts OFF (reverts on restart)
+    manual = ManualOverride(manual_state_path)        # enabled starts OFF (reverts on restart)
+    injection = InjectionOverride(injection_state_path)  # mutually exclusive with `manual`
 
     inv = InverterClient(inverter_host, inverter_port, user, password)
     await inv.connect()
@@ -251,7 +290,7 @@ async def run(
         from smart_home.mqtt import Publisher  # noqa: PLC0415
         pub = Publisher(mqtt_host, mqtt_port, mqtt_user, mqtt_password, node_id=node_id)
 
-        # All three run on the paho callback thread; the writes they touch are atomic.
+        # All run on the paho callback thread; the writes they touch are atomic.
         def _on_curtail_command(enabled: bool) -> None:
             gate.set(enabled)
             pub.publish_switch_state(enabled)
@@ -259,6 +298,9 @@ async def run(
 
         def _on_manual_override(enabled: bool) -> None:
             manual.set_enabled(enabled)
+            if enabled and injection.enabled:  # manual modes are mutually exclusive
+                injection.set_enabled(False)
+                pub.publish_injection_override_state(False)
             pub.publish_manual_override_state(enabled)
             log.info("manual override %s (%.0f%%)", "ON" if enabled else "off", manual.pct)
 
@@ -267,15 +309,32 @@ async def run(
             pub.publish_manual_number_state(manual.pct)
             log.info("manual derating set to %.0f%%", manual.pct)
 
+        def _on_injection_override(enabled: bool) -> None:
+            injection.set_enabled(enabled)
+            if enabled and manual.enabled:  # manual modes are mutually exclusive
+                manual.set_enabled(False)
+                pub.publish_manual_override_state(False)
+            pub.publish_injection_override_state(enabled)
+            log.info("injection limit %s (%.0fW)", "ON" if enabled else "off", injection.target_w)
+
+        def _on_injection_number(watts: float) -> None:
+            injection.set_target(watts)
+            pub.publish_injection_number_state(injection.target_w)
+            log.info("injection target set to %.0fW", injection.target_w)
+
         pub.connect(
             on_curtail_command=None if dry_run else _on_curtail_command,
             on_manual_override=None if dry_run else _on_manual_override,
             on_manual_number=None if dry_run else _on_manual_number,
+            on_injection_override=None if dry_run else _on_injection_override,
+            on_injection_number=None if dry_run else _on_injection_number,
         )
         if not dry_run:
             pub.publish_switch_state(gate.enabled)
             pub.publish_manual_override_state(manual.enabled)
             pub.publish_manual_number_state(manual.pct)
+            pub.publish_injection_override_state(injection.enabled)
+            pub.publish_injection_number_state(injection.target_w)
         log.info("MQTT publishing to %s:%d (curtailment %s)", mqtt_host, mqtt_port,
                  "dry-run" if dry_run else ("ENABLED" if gate.enabled else "disabled"))
     if pub is not None:
@@ -340,27 +399,36 @@ async def run(
                         deadband_pct=deadband_pct,
                     )
                     derating_pct = reading["derating"]
-                    # Precedence: manual override > plan (when curtailment enabled) > full power.
-                    # `--dry-run` is a hard override that disables every write.
+                    # Precedence: manual derating > injection limit > plan (when curtailment
+                    # enabled) > full power. The two manual modes are mutually exclusive (the HA
+                    # callbacks enforce that). `--dry-run` is a hard override on every write.
                     manual_on = manual.enabled and not dry_run
+                    injection_on = injection.enabled and not dry_run
                     curtail_on = gate.enabled and not dry_run
                     if manual_on:
-                        target_pct = manual.pct           # take full control, ignore the plan
-                        action_label = "MANUAL"
-                        mode = "manual"
+                        target_pct = manual.pct           # fixed % cap, ignore the plan
+                        action_label, mode = "MANUAL", "manual"
+                    elif injection_on:
+                        target_pct = injection_limit_percent(
+                            injection.target_w,
+                            inverter_active_power_w=pv or 0.0,
+                            p1_net_w=p1r.active_power_w,
+                            p_max_w=reading["p_max"] or 5000.0,
+                        )
+                        action_label, mode = "INJECTION", f"inj<={injection.target_w:.0f}W"
                     else:
                         target_pct = step.target_percent  # show the planned target
                         action_label = step.action.value
                         mode = "on" if curtail_on else ("dry-run" if dry_run else "off")
                     log.info(
-                        "action=%s target=%.1f%% (cur=%s%%) curtail=%s prod=%sW net=%+dW :: %s",
+                        "action=%s target=%.1f%% (cur=%s%%) mode=%s prod=%sW net=%+dW :: %s",
                         action_label, target_pct, reading["derating"], mode,
                         pv, int(p1r.active_power_w), step.reason,
                     )
-                    if manual_on:
+                    if manual_on or injection_on:
                         if abs(target_pct - cur) >= deadband_pct:
                             await inv.set_derating(target_pct)
-                            log.info("manual override wrote derating=%.1f%%", target_pct)
+                            log.info("%s wrote derating=%.1f%%", action_label.lower(), target_pct)
                             derating_pct = target_pct
                     elif curtail_on:
                         if step.should_write:
@@ -369,7 +437,7 @@ async def run(
                             derating_pct = step.target_percent
                     elif not dry_run and cur < FULL_POWER_PCT - deadband_pct:
                         await inv.set_derating(FULL_POWER_PCT)
-                        log.info("curtailment disabled -> restored derating=%.0f%%", FULL_POWER_PCT)
+                        log.info("manual/curtail off -> restored derating=%.0f%%", FULL_POWER_PCT)
                         derating_pct = FULL_POWER_PCT
                 except Exception:
                     log.exception("control cycle failed -> fail-safe to %.0f%%", FULL_POWER_PCT)
@@ -440,6 +508,8 @@ def main(argv: list[str] | None = None) -> None:
                     help="file persisting the HA curtailment-enable switch (default OFF)")
     ap.add_argument("--manual-state-path", type=Path, default=DEFAULT_MANUAL_STATE_PATH,
                     help="file persisting the manual-derating %% (override itself resets OFF on restart)")
+    ap.add_argument("--injection-state-path", type=Path, default=DEFAULT_INJECTION_STATE_PATH,
+                    help="file persisting the injection target W (override itself resets OFF on restart)")
     args = ap.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -460,6 +530,7 @@ def main(argv: list[str] | None = None) -> None:
         mqtt_user=args.mqtt_user, mqtt_password=os.environ.get("MQTT_PW"),
         node_id=args.node_id, curtail_state_path=args.curtail_state_path,
         manual_state_path=args.manual_state_path,
+        injection_state_path=args.injection_state_path,
     ))
 
 

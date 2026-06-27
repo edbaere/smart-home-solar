@@ -21,9 +21,9 @@ views:
         name: Curtailment control
         icon: mdi:transmission-tower-export
 
-      # Manual "set derating now" override. Switch ON writes the % directly and ignores the
-      # plan (full precedence); the override reverts to OFF on restart. Applies within one
-      # control tick (~30 s).
+      # Two mutually-exclusive manual modes, each overriding the plan (revert to OFF on restart,
+      # apply within ~30 s). "Manual override" writes a fixed derating %. "Injection limit"
+      # closed-loops the inverter so grid export holds at the target watts.
       - type: entities
         title: Manual control
         entities:
@@ -31,6 +31,11 @@ views:
             name: Manual override
           - entity: number.smart_home_curtailment_manual_derating
             name: Derating %
+          - type: divider
+          - entity: switch.smart_home_curtailment_injection_limit
+            name: Injection limit
+          - entity: number.smart_home_curtailment_injection_target
+            name: Injection target (W)
 
       - type: glance
         title: Now

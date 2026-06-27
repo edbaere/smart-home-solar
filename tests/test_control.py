@@ -2,7 +2,12 @@
 
 import pytest
 
-from smart_home.control import DEFAULT_MARGIN_W, Setpoint, compute_setpoint
+from smart_home.control import (
+    DEFAULT_MARGIN_W,
+    Setpoint,
+    compute_setpoint,
+    injection_limit_percent,
+)
 from smart_home.economics import Action
 
 PMAX = 5000.0
@@ -57,3 +62,27 @@ def test_zero_export_clamps_to_zero_when_target_negative():
     s = _sp(Action.ZERO_EXPORT, 0, -1000, margin=0)  # load -1000 -> target 0
     assert s.target_w == 0.0
     assert s.derating_percent == 0.0
+
+
+# --- injection (export) limit ---------------------------------------------
+
+def _inj(target, prod, net):
+    return injection_limit_percent(
+        target, inverter_active_power_w=prod, p1_net_w=net, p_max_w=PMAX
+    )
+
+
+def test_injection_limit_caps_export_at_target():
+    # prod 4000, net -3000 (export 3000) -> load 1000. Hold export at 1000:
+    # inverter should produce load + 1000 = 2000 -> 40% of 5000.
+    assert _inj(1000, 4000, -3000) == 40.0
+
+
+def test_injection_limit_zero_target_matches_zero_export():
+    # target 0 -> inverter = load -> net 0. load = 4000 + (-3000) = 1000 -> 20%.
+    assert _inj(0, 4000, -3000) == 20.0
+
+
+def test_injection_limit_clamps_to_100():
+    # load already high, big target -> would exceed rated power -> capped at 100%.
+    assert _inj(2000, 4900, 0) == 100.0

@@ -108,3 +108,10 @@ turn it OFF to return to automatic. The override **reverts to OFF on restart** (
 remembered), so a reboot can't strand the inverter at a manual value. Changes apply within one
 control tick (~30 s). Like all writes, it needs the controller running write-capable (`HUAWEI_PW`,
 not `--dry-run`).
+
+**Manual injection (export) limit:** an **"Injection limit" switch** + **"Injection target (W)"
+number** cap grid export at a chosen wattage. When ON the controller closed-loops the inverter
+each tick (output ≈ `load + target`) so export holds at the target — e.g. target 0 W = zero
+export, 1500 W = export up to 1.5 kW. It overrides the plan and is **mutually exclusive** with the
+manual-derating override (turning one on turns the other off). Same restart behaviour (override
+reverts to OFF, target W remembered). HA shows action **`INJECTION`** while active.
