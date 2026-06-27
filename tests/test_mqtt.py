@@ -7,6 +7,7 @@ from smart_home.mqtt import (
     plan_discovery_config,
     plan_payload,
     state_payload,
+    switch_discovery_config,
 )
 
 
@@ -99,3 +100,17 @@ def test_plan_payload_shape_and_epoch_ms():
 def test_plan_payload_empty():
     p = plan_payload([])
     assert p == {"slot_count": 0, "covers_start": None, "covers_end": None, "points": []}
+
+
+# --- curtailment switch ---------------------------------------------------
+
+def test_switch_discovery_is_a_switch_with_command_and_state():
+    cfgs = switch_discovery_config(
+        "solarpi", "smart_home/solarpi/curtail/set", "smart_home/solarpi/curtail/state"
+    )
+    cfg = cfgs["homeassistant/switch/smart_home_solarpi/curtail_enable/config"]
+    assert cfg["command_topic"] == "smart_home/solarpi/curtail/set"
+    assert cfg["state_topic"] == "smart_home/solarpi/curtail/state"
+    assert cfg["payload_on"] == "ON"
+    assert cfg["payload_off"] == "OFF"
+    assert cfg["unique_id"] == "smart_home_solarpi_curtail_enable"

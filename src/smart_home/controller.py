@@ -42,6 +42,7 @@ import signal
 import sys
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from smart_home.control import DEFAULT_MARGIN_W, compute_setpoint
@@ -53,8 +54,35 @@ FULL_POWER_PCT = 100.0
 DEFAULT_DEADBAND_PCT = 2.0
 DEFAULT_INTERVAL_S = 30.0           # control-decision cadence
 DEFAULT_TELEMETRY_INTERVAL_S = 1.0  # MQTT publish / fast-read cadence
+DEFAULT_CURTAIL_STATE_PATH = Path.home() / ".smart_home" / "curtail_enabled"
 
 log = logging.getLogger("smart_home.controller")
+
+
+class CurtailGate:
+    """Persisted on/off gate for whether curtailment is actually written to the inverter.
+
+    Defaults to OFF (safe: inverter runs at full power) when no state file exists. The state
+    survives restarts so a reboot never silently re-enables (or disables) curtailment.
+    """
+
+    def __init__(self, path: Path = DEFAULT_CURTAIL_STATE_PATH):
+        self._path = Path(path)
+        self.enabled = self._load()
+
+    def _load(self) -> bool:
+        try:
+            return self._path.read_text().strip() == "1"
+        except FileNotFoundError:
+            return False
+
+    def set(self, enabled: bool) -> None:
+        self.enabled = enabled
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._path.write_text("1" if enabled else "0")
+        except Exception:
+            log.exception("failed to persist curtail-enable state")
 
 
 # --- pure decision logic (no I/O) -----------------------------------------
@@ -170,8 +198,13 @@ async def run(
     mqtt_user: str | None = None,
     mqtt_password: str | None = None,
     node_id: str = "solarpi",
+    curtail_state_path: Path = DEFAULT_CURTAIL_STATE_PATH,
 ) -> None:
     from smart_home import p1 as p1_mod  # noqa: PLC0415
+
+    # Runtime gate: when disabled, behave like dry-run (compute + show, never curtail).
+    # `--dry-run` is a hard override that disables writing regardless of the gate.
+    gate = CurtailGate(curtail_state_path)
 
     inv = InverterClient(inverter_host, inverter_port, user, password)
     await inv.connect()
@@ -179,8 +212,18 @@ async def run(
     if mqtt_host:
         from smart_home.mqtt import Publisher  # noqa: PLC0415
         pub = Publisher(mqtt_host, mqtt_port, mqtt_user, mqtt_password, node_id=node_id)
-        pub.connect()
-        log.info("MQTT publishing to %s:%d", mqtt_host, mqtt_port)
+
+        def _on_curtail_command(enabled: bool) -> None:
+            # Runs on the paho callback thread; bool writes are atomic in CPython.
+            gate.set(enabled)
+            pub.publish_switch_state(enabled)
+            log.info("curtailment %s via HA switch", "ENABLED" if enabled else "disabled")
+
+        pub.connect(on_curtail_command=None if dry_run else _on_curtail_command)
+        if not dry_run:
+            pub.publish_switch_state(gate.enabled)
+        log.info("MQTT publishing to %s:%d (curtailment %s)", mqtt_host, mqtt_port,
+                 "dry-run" if dry_run else ("ENABLED" if gate.enabled else "disabled"))
     if pub is not None:
         from smart_home.mqtt import plan_payload, state_payload  # noqa: PLC0415
     stop = asyncio.Event()
@@ -241,17 +284,27 @@ async def run(
                         margin_w=margin_w,
                         deadband_pct=deadband_pct,
                     )
-                    target_pct = step.target_percent
+                    target_pct = step.target_percent  # always show the planned target
                     derating_pct = reading["derating"]
+                    # Gate the write: only curtail when enabled (and not a hard dry-run). When
+                    # disabled, the plan is still computed + shown, but the inverter is held at
+                    # full power (restore it if a previous run left it curtailed).
+                    curtail_on = gate.enabled and not dry_run
                     log.info(
-                        "action=%s target=%.1f%% (cur=%s%%) write=%s prod=%sW net=%+dW :: %s",
+                        "action=%s target=%.1f%% (cur=%s%%) curtail=%s write=%s prod=%sW net=%+dW :: %s",
                         step.action.value, step.target_percent, reading["derating"],
-                        step.should_write, pv, int(p1r.active_power_w), step.reason,
+                        "on" if curtail_on else ("dry-run" if dry_run else "off"),
+                        step.should_write and curtail_on, pv, int(p1r.active_power_w), step.reason,
                     )
-                    if step.should_write and not dry_run:
-                        await inv.set_derating(step.target_percent)
-                        log.info("wrote derating=%.1f%%", step.target_percent)
-                        derating_pct = step.target_percent
+                    if curtail_on:
+                        if step.should_write:
+                            await inv.set_derating(step.target_percent)
+                            log.info("wrote derating=%.1f%%", step.target_percent)
+                            derating_pct = step.target_percent
+                    elif not dry_run and cur < FULL_POWER_PCT - deadband_pct:
+                        await inv.set_derating(FULL_POWER_PCT)
+                        log.info("curtailment disabled -> restored derating=%.0f%%", FULL_POWER_PCT)
+                        derating_pct = FULL_POWER_PCT
                 except Exception:
                     log.exception("control cycle failed -> fail-safe to %.0f%%", FULL_POWER_PCT)
                     action, target_pct = Action.NORMAL, FULL_POWER_PCT
@@ -317,6 +370,8 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--mqtt-port", type=int, default=int(os.environ.get("MQTT_PORT", "1883")))
     ap.add_argument("--mqtt-user", default=os.environ.get("MQTT_USER"))
     ap.add_argument("--node-id", default=os.environ.get("NODE_ID", "solarpi"))
+    ap.add_argument("--curtail-state-path", type=Path, default=DEFAULT_CURTAIL_STATE_PATH,
+                    help="file persisting the HA curtailment-enable switch (default OFF)")
     args = ap.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -335,7 +390,7 @@ def main(argv: list[str] | None = None) -> None:
         dry_run=args.dry_run, once=args.once,
         mqtt_host=args.mqtt_host, mqtt_port=args.mqtt_port,
         mqtt_user=args.mqtt_user, mqtt_password=os.environ.get("MQTT_PW"),
-        node_id=args.node_id,
+        node_id=args.node_id, curtail_state_path=args.curtail_state_path,
     ))
 
 

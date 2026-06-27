@@ -146,6 +146,30 @@ def plan_payload(slots: list[Any]) -> dict[str, Any]:
     }
 
 
+# --- curtailment enable switch --------------------------------------------
+#
+# A HA switch that gates whether the controller actually writes curtailment to the inverter.
+# OFF (default, safe): the plan + decisions are still computed and published, but nothing is
+# written — the inverter runs at full power. ON: the planned derating is executed.
+
+def switch_discovery_config(
+    node_id: str, command_topic: str, state_topic: str, discovery_prefix: str = "homeassistant"
+) -> dict[str, dict[str, Any]]:
+    """Return the {config_topic: payload} HA-discovery message for the curtailment switch."""
+    cfg = {
+        "name": "Curtailment control",
+        "unique_id": f"smart_home_{node_id}_curtail_enable",
+        "object_id": "solar_curtail_enable",  # -> switch.solar_curtail_enable (fresh installs)
+        "command_topic": command_topic,
+        "state_topic": state_topic,
+        "payload_on": "ON",
+        "payload_off": "OFF",
+        "icon": "mdi:transmission-tower-export",
+        "device": _device(node_id),
+    }
+    return {f"{discovery_prefix}/switch/smart_home_{node_id}/curtail_enable/config": cfg}
+
+
 class Publisher:
     """Thin MQTT wrapper: connect, publish HA discovery once, publish state per cycle."""
 
@@ -164,20 +188,39 @@ class Publisher:
         self._discovery_prefix = discovery_prefix
         self._state_topic = f"smart_home/{node_id}/state"
         self._plan_topic = f"smart_home/{node_id}/plan"
+        self._switch_state_topic = f"smart_home/{node_id}/curtail/state"
+        self._switch_cmd_topic = f"smart_home/{node_id}/curtail/set"
+        self._on_curtail_command = None
         self._client = None
 
-    def connect(self) -> None:
+    def connect(self, on_curtail_command=None) -> None:
+        """Connect, publish HA discovery. If ``on_curtail_command`` is given, also expose the
+        curtailment switch and call it (with a bool) whenever HA toggles the switch."""
         import paho.mqtt.client as mqtt  # noqa: PLC0415
 
+        self._on_curtail_command = on_curtail_command
         self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"smart_home-{self._node_id}")
         if self._username:
             self._client.username_pw_set(self._username, self._password)
+        self._client.on_message = self._handle_message
         self._client.connect(self._host, self._port, keepalive=60)
         self._client.loop_start()
         for topic, payload in discovery_configs(self._node_id, self._state_topic, self._discovery_prefix).items():
             self._client.publish(topic, json.dumps(payload), retain=True)
         for topic, payload in plan_discovery_config(self._node_id, self._plan_topic, self._discovery_prefix).items():
             self._client.publish(topic, json.dumps(payload), retain=True)
+        if on_curtail_command is not None:
+            for topic, payload in switch_discovery_config(
+                self._node_id, self._switch_cmd_topic, self._switch_state_topic, self._discovery_prefix
+            ).items():
+                self._client.publish(topic, json.dumps(payload), retain=True)
+            self._client.subscribe(self._switch_cmd_topic)
+
+    def _handle_message(self, client, userdata, msg) -> None:
+        if msg.topic == self._switch_cmd_topic and self._on_curtail_command is not None:
+            payload = msg.payload.decode(errors="ignore").strip().upper()
+            if payload in ("ON", "OFF"):
+                self._on_curtail_command(payload == "ON")
 
     def publish_state(self, payload: dict[str, Any]) -> None:
         if self._client is not None:
@@ -187,6 +230,11 @@ class Publisher:
         """Publish the full day-ahead plan (retained) for the forecast chart."""
         if self._client is not None:
             self._client.publish(self._plan_topic, json.dumps(payload), retain=True)
+
+    def publish_switch_state(self, enabled: bool) -> None:
+        """Reflect the curtailment switch state back to HA (retained)."""
+        if self._client is not None:
+            self._client.publish(self._switch_state_topic, "ON" if enabled else "OFF", retain=True)
 
     def close(self) -> None:
         if self._client is not None:

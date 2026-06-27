@@ -3,7 +3,7 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from smart_home.controller import resolve_action, plan_step, control_every, Step
+from smart_home.controller import resolve_action, plan_step, control_every, Step, CurtailGate
 from smart_home.economics import Action, Slot
 from smart_home.schedule import Schedule
 
@@ -87,3 +87,20 @@ def test_full_curtail_writes_to_zero():
                      p_max_w=PMAX, current_derating_pct=100.0)
     assert step.target_percent == 0.0
     assert step.should_write is True
+
+
+# --- curtailment enable gate ----------------------------------------------
+
+def test_curtail_gate_defaults_off_when_no_file(tmp_path):
+    gate = CurtailGate(tmp_path / "curtail_enabled")
+    assert gate.enabled is False
+
+
+def test_curtail_gate_persists_and_reloads(tmp_path):
+    path = tmp_path / "sub" / "curtail_enabled"   # parent dir doesn't exist yet
+    gate = CurtailGate(path)
+    gate.set(True)
+    assert gate.enabled is True
+    assert CurtailGate(path).enabled is True       # survives a fresh load (restart)
+    gate.set(False)
+    assert CurtailGate(path).enabled is False

@@ -1,5 +1,5 @@
 [Unit]
-Description=smart_home PV curtailment controller
+Description=smart_home PV curtailment controller (write-capable; gated by HA "Curtailment control" switch, default OFF)
 After=network-online.target
 Wants=network-online.target
 # wlan0 -> inverter AP can take a moment after boot

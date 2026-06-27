@@ -74,6 +74,29 @@ dashboard's raw config for ready-made gauges/graphs.
 > `sensor.solar_*`) shows no data. Use `deploy/ha-dashboard.legacy-ids.yaml` instead, or rename
 > the entities in the HA UI to the `solar_*` ids.
 
-**Going live later:** stop the dry-run publisher (`sudo systemctl disable --now
-smart_home-publisher`) and enable `smart_home-controller.service` (which writes), keeping the
-same MQTT publishing.
+**Going live later — HA switch:** the controller exposes a **"Curtailment control" switch**
+(`switch.solar_curtail_enable`, or `switch.smart_home_curtailment_curtailment_control` on
+legacy-id installs). It gates whether the plan is actually written to the inverter:
+
+- **OFF (default, safe):** plan + decisions are computed and published exactly as in dry-run,
+  but nothing is written — the inverter is held at full power. The state persists across
+  restarts (`~/.smart_home/curtail_enabled`) and defaults OFF, so a reboot never silently
+  curtails.
+- **ON:** the planned derating is executed.
+
+To make the switch effective you must run the controller **write-capable** (not `--dry-run`),
+which needs the installer password:
+
+```bash
+# 1. add the inverter installer password to the env (required for any write)
+echo 'HUAWEI_PW=<installer-password>' | sudo tee -a /etc/smart_home.env
+# 2. swap the dry-run publisher for the write-capable, switch-gated controller
+sudo systemctl disable --now smart_home-publisher
+sudo cp deploy/smart_home-controller.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now smart_home-controller
+```
+
+`smart_home-controller.service` loads `/etc/smart_home.env` (so it gets `HUAWEI_PW`, `MQTT_HOST`,
+`P1_HOST`) and publishes the same telemetry + switch. With the switch OFF, behaviour is identical
+to the dry-run publisher; flip it ON in HA when you're ready to actuate. `--dry-run` remains a
+hard override that disables writes (and hides the switch) regardless.
