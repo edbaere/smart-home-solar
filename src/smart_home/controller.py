@@ -55,6 +55,7 @@ DEFAULT_DEADBAND_PCT = 2.0
 DEFAULT_INTERVAL_S = 30.0           # control-decision cadence
 DEFAULT_TELEMETRY_INTERVAL_S = 1.0  # MQTT publish / fast-read cadence
 DEFAULT_CURTAIL_STATE_PATH = Path.home() / ".smart_home" / "curtail_enabled"
+DEFAULT_MANUAL_STATE_PATH = Path.home() / ".smart_home" / "manual_derating"
 
 log = logging.getLogger("smart_home.controller")
 
@@ -83,6 +84,41 @@ class CurtailGate:
             self._path.write_text("1" if enabled else "0")
         except Exception:
             log.exception("failed to persist curtail-enable state")
+
+
+class ManualOverride:
+    """Manual "set derating now" override. When ``enabled`` the controller writes ``pct``
+    directly and ignores the plan (full precedence).
+
+    ``enabled`` is deliberately NOT persisted — it reverts to OFF on restart so a reboot can
+    never strand the inverter pinned at a manual value. ``pct`` is persisted for convenience.
+    """
+
+    def __init__(self, path: Path = DEFAULT_MANUAL_STATE_PATH):
+        self._path = Path(path)
+        self.enabled = False
+        self.pct = self._load_pct()
+
+    def _load_pct(self) -> float:
+        try:
+            return _clamp_pct(float(self._path.read_text().strip()))
+        except (FileNotFoundError, ValueError):
+            return FULL_POWER_PCT
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.enabled = enabled
+
+    def set_pct(self, pct: float) -> None:
+        self.pct = _clamp_pct(pct)
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._path.write_text(f"{self.pct:g}")
+        except Exception:
+            log.exception("failed to persist manual-derating pct")
+
+
+def _clamp_pct(pct: float) -> float:
+    return max(0.0, min(100.0, pct))
 
 
 # --- pure decision logic (no I/O) -----------------------------------------
@@ -199,12 +235,14 @@ async def run(
     mqtt_password: str | None = None,
     node_id: str = "solarpi",
     curtail_state_path: Path = DEFAULT_CURTAIL_STATE_PATH,
+    manual_state_path: Path = DEFAULT_MANUAL_STATE_PATH,
 ) -> None:
     from smart_home import p1 as p1_mod  # noqa: PLC0415
 
     # Runtime gate: when disabled, behave like dry-run (compute + show, never curtail).
     # `--dry-run` is a hard override that disables writing regardless of the gate.
     gate = CurtailGate(curtail_state_path)
+    manual = ManualOverride(manual_state_path)  # enabled starts OFF (reverts on restart)
 
     inv = InverterClient(inverter_host, inverter_port, user, password)
     await inv.connect()
@@ -213,15 +251,31 @@ async def run(
         from smart_home.mqtt import Publisher  # noqa: PLC0415
         pub = Publisher(mqtt_host, mqtt_port, mqtt_user, mqtt_password, node_id=node_id)
 
+        # All three run on the paho callback thread; the writes they touch are atomic.
         def _on_curtail_command(enabled: bool) -> None:
-            # Runs on the paho callback thread; bool writes are atomic in CPython.
             gate.set(enabled)
             pub.publish_switch_state(enabled)
             log.info("curtailment %s via HA switch", "ENABLED" if enabled else "disabled")
 
-        pub.connect(on_curtail_command=None if dry_run else _on_curtail_command)
+        def _on_manual_override(enabled: bool) -> None:
+            manual.set_enabled(enabled)
+            pub.publish_manual_override_state(enabled)
+            log.info("manual override %s (%.0f%%)", "ON" if enabled else "off", manual.pct)
+
+        def _on_manual_number(pct: float) -> None:
+            manual.set_pct(pct)
+            pub.publish_manual_number_state(manual.pct)
+            log.info("manual derating set to %.0f%%", manual.pct)
+
+        pub.connect(
+            on_curtail_command=None if dry_run else _on_curtail_command,
+            on_manual_override=None if dry_run else _on_manual_override,
+            on_manual_number=None if dry_run else _on_manual_number,
+        )
         if not dry_run:
             pub.publish_switch_state(gate.enabled)
+            pub.publish_manual_override_state(manual.enabled)
+            pub.publish_manual_number_state(manual.pct)
         log.info("MQTT publishing to %s:%d (curtailment %s)", mqtt_host, mqtt_port,
                  "dry-run" if dry_run else ("ENABLED" if gate.enabled else "disabled"))
     if pub is not None:
@@ -234,6 +288,7 @@ async def run(
     control_ratio = control_every(interval_s, telemetry_interval_s)
     # cached outputs of the last control tick, published on every (faster) telemetry tick
     action = Action.NORMAL
+    action_label = Action.NORMAL.value  # what HA shows (becomes "MANUAL" under manual override)
     target_pct = FULL_POWER_PCT
     derating_pct: float | None = None
     belpex: float | None = None
@@ -284,19 +339,30 @@ async def run(
                         margin_w=margin_w,
                         deadband_pct=deadband_pct,
                     )
-                    target_pct = step.target_percent  # always show the planned target
                     derating_pct = reading["derating"]
-                    # Gate the write: only curtail when enabled (and not a hard dry-run). When
-                    # disabled, the plan is still computed + shown, but the inverter is held at
-                    # full power (restore it if a previous run left it curtailed).
+                    # Precedence: manual override > plan (when curtailment enabled) > full power.
+                    # `--dry-run` is a hard override that disables every write.
+                    manual_on = manual.enabled and not dry_run
                     curtail_on = gate.enabled and not dry_run
+                    if manual_on:
+                        target_pct = manual.pct           # take full control, ignore the plan
+                        action_label = "MANUAL"
+                        mode = "manual"
+                    else:
+                        target_pct = step.target_percent  # show the planned target
+                        action_label = step.action.value
+                        mode = "on" if curtail_on else ("dry-run" if dry_run else "off")
                     log.info(
-                        "action=%s target=%.1f%% (cur=%s%%) curtail=%s write=%s prod=%sW net=%+dW :: %s",
-                        step.action.value, step.target_percent, reading["derating"],
-                        "on" if curtail_on else ("dry-run" if dry_run else "off"),
-                        step.should_write and curtail_on, pv, int(p1r.active_power_w), step.reason,
+                        "action=%s target=%.1f%% (cur=%s%%) curtail=%s prod=%sW net=%+dW :: %s",
+                        action_label, target_pct, reading["derating"], mode,
+                        pv, int(p1r.active_power_w), step.reason,
                     )
-                    if curtail_on:
+                    if manual_on:
+                        if abs(target_pct - cur) >= deadband_pct:
+                            await inv.set_derating(target_pct)
+                            log.info("manual override wrote derating=%.1f%%", target_pct)
+                            derating_pct = target_pct
+                    elif curtail_on:
                         if step.should_write:
                             await inv.set_derating(step.target_percent)
                             log.info("wrote derating=%.1f%%", step.target_percent)
@@ -307,7 +373,7 @@ async def run(
                         derating_pct = FULL_POWER_PCT
                 except Exception:
                     log.exception("control cycle failed -> fail-safe to %.0f%%", FULL_POWER_PCT)
-                    action, target_pct = Action.NORMAL, FULL_POWER_PCT
+                    action, action_label, target_pct = Action.NORMAL, Action.NORMAL.value, FULL_POWER_PCT
                     pv, p1r = None, None  # force a fresh light read below
                     if not dry_run:
                         try:
@@ -323,7 +389,7 @@ async def run(
                     if p1r is None:
                         p1r = await asyncio.to_thread(p1_mod.read, p1_host)
                     pub.publish_state(state_payload(
-                        action=action.value, derating_pct=derating_pct,
+                        action=action_label, derating_pct=derating_pct,
                         target_derating_pct=target_pct,
                         pv_power_w=pv or 0.0, grid_net_w=p1r.active_power_w,
                         l1_w=p1r.active_power_l1_w, l2_w=p1r.active_power_l2_w, l3_w=p1r.active_power_l3_w,
@@ -372,6 +438,8 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--node-id", default=os.environ.get("NODE_ID", "solarpi"))
     ap.add_argument("--curtail-state-path", type=Path, default=DEFAULT_CURTAIL_STATE_PATH,
                     help="file persisting the HA curtailment-enable switch (default OFF)")
+    ap.add_argument("--manual-state-path", type=Path, default=DEFAULT_MANUAL_STATE_PATH,
+                    help="file persisting the manual-derating %% (override itself resets OFF on restart)")
     args = ap.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -391,6 +459,7 @@ def main(argv: list[str] | None = None) -> None:
         mqtt_host=args.mqtt_host, mqtt_port=args.mqtt_port,
         mqtt_user=args.mqtt_user, mqtt_password=os.environ.get("MQTT_PW"),
         node_id=args.node_id, curtail_state_path=args.curtail_state_path,
+        manual_state_path=args.manual_state_path,
     ))
 
 

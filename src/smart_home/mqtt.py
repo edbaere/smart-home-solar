@@ -170,6 +170,52 @@ def switch_discovery_config(
     return {f"{discovery_prefix}/switch/smart_home_{node_id}/curtail_enable/config": cfg}
 
 
+# --- manual derating override ---------------------------------------------
+#
+# A "Manual override" switch + a "Manual derating %" number. When the switch is ON the
+# controller writes the chosen % directly and ignores the plan (full precedence). The switch
+# is never persisted — it reverts to OFF on restart so a reboot can't strand the inverter
+# pinned at a manual value. The % is remembered for convenience.
+
+def manual_override_discovery_config(
+    node_id: str, command_topic: str, state_topic: str, discovery_prefix: str = "homeassistant"
+) -> dict[str, dict[str, Any]]:
+    """Return the {config_topic: payload} HA-discovery message for the manual-override switch."""
+    cfg = {
+        "name": "Manual override",
+        "unique_id": f"smart_home_{node_id}_manual_override",
+        "object_id": "solar_manual_override",
+        "command_topic": command_topic,
+        "state_topic": state_topic,
+        "payload_on": "ON",
+        "payload_off": "OFF",
+        "icon": "mdi:hand-back-right",
+        "device": _device(node_id),
+    }
+    return {f"{discovery_prefix}/switch/smart_home_{node_id}/manual_override/config": cfg}
+
+
+def manual_number_discovery_config(
+    node_id: str, command_topic: str, state_topic: str, discovery_prefix: str = "homeassistant"
+) -> dict[str, dict[str, Any]]:
+    """Return the {config_topic: payload} HA-discovery message for the manual-derating number."""
+    cfg = {
+        "name": "Manual derating",
+        "unique_id": f"smart_home_{node_id}_manual_derating",
+        "object_id": "solar_manual_derating",
+        "command_topic": command_topic,
+        "state_topic": state_topic,
+        "min": 0,
+        "max": 100,
+        "step": 1,
+        "unit_of_measurement": "%",
+        "mode": "slider",
+        "icon": "mdi:speedometer",
+        "device": _device(node_id),
+    }
+    return {f"{discovery_prefix}/number/smart_home_{node_id}/manual_derating/config": cfg}
+
+
 class Publisher:
     """Thin MQTT wrapper: connect, publish HA discovery once, publish state per cycle."""
 
@@ -190,15 +236,23 @@ class Publisher:
         self._plan_topic = f"smart_home/{node_id}/plan"
         self._switch_state_topic = f"smart_home/{node_id}/curtail/state"
         self._switch_cmd_topic = f"smart_home/{node_id}/curtail/set"
+        self._manual_sw_state_topic = f"smart_home/{node_id}/manual/state"
+        self._manual_sw_cmd_topic = f"smart_home/{node_id}/manual/set"
+        self._manual_num_state_topic = f"smart_home/{node_id}/manual_pct/state"
+        self._manual_num_cmd_topic = f"smart_home/{node_id}/manual_pct/set"
         self._on_curtail_command = None
+        self._on_manual_override = None
+        self._on_manual_number = None
         self._client = None
 
-    def connect(self, on_curtail_command=None) -> None:
-        """Connect, publish HA discovery. If ``on_curtail_command`` is given, also expose the
-        curtailment switch and call it (with a bool) whenever HA toggles the switch."""
+    def connect(self, on_curtail_command=None, on_manual_override=None, on_manual_number=None) -> None:
+        """Connect and publish HA discovery. Each callback, when given, exposes its control and
+        is invoked on HA changes: curtail/manual_override with a bool, manual_number with a float."""
         import paho.mqtt.client as mqtt  # noqa: PLC0415
 
         self._on_curtail_command = on_curtail_command
+        self._on_manual_override = on_manual_override
+        self._on_manual_number = on_manual_number
         self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"smart_home-{self._node_id}")
         if self._username:
             self._client.username_pw_set(self._username, self._password)
@@ -210,17 +264,35 @@ class Publisher:
         for topic, payload in plan_discovery_config(self._node_id, self._plan_topic, self._discovery_prefix).items():
             self._client.publish(topic, json.dumps(payload), retain=True)
         if on_curtail_command is not None:
-            for topic, payload in switch_discovery_config(
-                self._node_id, self._switch_cmd_topic, self._switch_state_topic, self._discovery_prefix
-            ).items():
-                self._client.publish(topic, json.dumps(payload), retain=True)
+            self._publish_discovery(switch_discovery_config(
+                self._node_id, self._switch_cmd_topic, self._switch_state_topic, self._discovery_prefix))
             self._client.subscribe(self._switch_cmd_topic)
+        if on_manual_override is not None:
+            self._publish_discovery(manual_override_discovery_config(
+                self._node_id, self._manual_sw_cmd_topic, self._manual_sw_state_topic, self._discovery_prefix))
+            self._client.subscribe(self._manual_sw_cmd_topic)
+        if on_manual_number is not None:
+            self._publish_discovery(manual_number_discovery_config(
+                self._node_id, self._manual_num_cmd_topic, self._manual_num_state_topic, self._discovery_prefix))
+            self._client.subscribe(self._manual_num_cmd_topic)
+
+    def _publish_discovery(self, configs: dict[str, dict[str, Any]]) -> None:
+        for topic, payload in configs.items():
+            self._client.publish(topic, json.dumps(payload), retain=True)
 
     def _handle_message(self, client, userdata, msg) -> None:
+        payload = msg.payload.decode(errors="ignore").strip()
         if msg.topic == self._switch_cmd_topic and self._on_curtail_command is not None:
-            payload = msg.payload.decode(errors="ignore").strip().upper()
-            if payload in ("ON", "OFF"):
-                self._on_curtail_command(payload == "ON")
+            if payload.upper() in ("ON", "OFF"):
+                self._on_curtail_command(payload.upper() == "ON")
+        elif msg.topic == self._manual_sw_cmd_topic and self._on_manual_override is not None:
+            if payload.upper() in ("ON", "OFF"):
+                self._on_manual_override(payload.upper() == "ON")
+        elif msg.topic == self._manual_num_cmd_topic and self._on_manual_number is not None:
+            try:
+                self._on_manual_number(float(payload))
+            except ValueError:
+                pass
 
     def publish_state(self, payload: dict[str, Any]) -> None:
         if self._client is not None:
@@ -235,6 +307,16 @@ class Publisher:
         """Reflect the curtailment switch state back to HA (retained)."""
         if self._client is not None:
             self._client.publish(self._switch_state_topic, "ON" if enabled else "OFF", retain=True)
+
+    def publish_manual_override_state(self, enabled: bool) -> None:
+        """Reflect the manual-override switch state back to HA (retained)."""
+        if self._client is not None:
+            self._client.publish(self._manual_sw_state_topic, "ON" if enabled else "OFF", retain=True)
+
+    def publish_manual_number_state(self, pct: float) -> None:
+        """Reflect the manual-derating % back to HA (retained)."""
+        if self._client is not None:
+            self._client.publish(self._manual_num_state_topic, f"{pct:g}", retain=True)
 
     def close(self) -> None:
         if self._client is not None:

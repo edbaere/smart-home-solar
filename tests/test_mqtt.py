@@ -4,6 +4,8 @@ from smart_home.economics import Slot
 from smart_home.mqtt import (
     SENSORS,
     discovery_configs,
+    manual_number_discovery_config,
+    manual_override_discovery_config,
     plan_discovery_config,
     plan_payload,
     state_payload,
@@ -114,3 +116,26 @@ def test_switch_discovery_is_a_switch_with_command_and_state():
     assert cfg["payload_on"] == "ON"
     assert cfg["payload_off"] == "OFF"
     assert cfg["unique_id"] == "smart_home_solarpi_curtail_enable"
+
+
+# --- manual derating override ---------------------------------------------
+
+def test_manual_override_switch_discovery():
+    cfgs = manual_override_discovery_config(
+        "solarpi", "smart_home/solarpi/manual/set", "smart_home/solarpi/manual/state"
+    )
+    cfg = cfgs["homeassistant/switch/smart_home_solarpi/manual_override/config"]
+    assert cfg["command_topic"] == "smart_home/solarpi/manual/set"
+    assert cfg["unique_id"] == "smart_home_solarpi_manual_override"
+    assert cfg["payload_on"] == "ON"
+
+
+def test_manual_number_discovery_is_a_percent_number():
+    cfgs = manual_number_discovery_config(
+        "solarpi", "smart_home/solarpi/manual_pct/set", "smart_home/solarpi/manual_pct/state"
+    )
+    cfg = cfgs["homeassistant/number/smart_home_solarpi/manual_derating/config"]
+    assert cfg["min"] == 0
+    assert cfg["max"] == 100
+    assert cfg["unit_of_measurement"] == "%"
+    assert cfg["command_topic"] == "smart_home/solarpi/manual_pct/set"

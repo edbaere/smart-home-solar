@@ -100,3 +100,11 @@ sudo systemctl daemon-reload && sudo systemctl enable --now smart_home-controlle
 `P1_HOST`) and publishes the same telemetry + switch. With the switch OFF, behaviour is identical
 to the dry-run publisher; flip it ON in HA when you're ready to actuate. `--dry-run` remains a
 hard override that disables writes (and hides the switch) regardless.
+
+**Manual derating override:** a **"Manual override" switch** + **"Manual derating %" number**
+let you set the inverter derating by hand from HA. When the override is ON the controller writes
+that % directly and **ignores the plan** (full precedence, regardless of the curtailment switch);
+turn it OFF to return to automatic. The override **reverts to OFF on restart** (the % is
+remembered), so a reboot can't strand the inverter at a manual value. Changes apply within one
+control tick (~30 s). Like all writes, it needs the controller running write-capable (`HUAWEI_PW`,
+not `--dry-run`).

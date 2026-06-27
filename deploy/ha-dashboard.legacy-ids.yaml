@@ -21,6 +21,17 @@ views:
         name: Curtailment control
         icon: mdi:transmission-tower-export
 
+      # Manual "set derating now" override. Switch ON writes the % directly and ignores the
+      # plan (full precedence); the override reverts to OFF on restart. Applies within one
+      # control tick (~30 s).
+      - type: entities
+        title: Manual control
+        entities:
+          - entity: switch.smart_home_curtailment_manual_override
+            name: Manual override
+          - entity: number.smart_home_curtailment_manual_derating
+            name: Derating %
+
       - type: glance
         title: Now
         entities:

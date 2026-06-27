@@ -3,7 +3,9 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from smart_home.controller import resolve_action, plan_step, control_every, Step, CurtailGate
+from smart_home.controller import (
+    resolve_action, plan_step, control_every, Step, CurtailGate, ManualOverride,
+)
 from smart_home.economics import Action, Slot
 from smart_home.schedule import Schedule
 
@@ -104,3 +106,30 @@ def test_curtail_gate_persists_and_reloads(tmp_path):
     assert CurtailGate(path).enabled is True       # survives a fresh load (restart)
     gate.set(False)
     assert CurtailGate(path).enabled is False
+
+
+# --- manual override ------------------------------------------------------
+
+def test_manual_override_defaults_off_full_power(tmp_path):
+    m = ManualOverride(tmp_path / "manual")
+    assert m.enabled is False
+    assert m.pct == 100.0
+
+
+def test_manual_override_enabled_never_persists(tmp_path):
+    path = tmp_path / "manual"
+    m = ManualOverride(path)
+    m.set_enabled(True)
+    m.set_pct(60)
+    # a fresh load (restart) reverts the override to OFF but remembers the pct
+    reloaded = ManualOverride(path)
+    assert reloaded.enabled is False
+    assert reloaded.pct == 60.0
+
+
+def test_manual_override_clamps_pct(tmp_path):
+    m = ManualOverride(tmp_path / "manual")
+    m.set_pct(140)
+    assert m.pct == 100.0
+    m.set_pct(-5)
+    assert m.pct == 0.0
