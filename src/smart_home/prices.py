@@ -18,9 +18,11 @@ from __future__ import annotations
 
 import os
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from time import sleep as _sleep
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Callable, Iterable
@@ -152,11 +154,16 @@ def fetch_raw_prices(
     zone: str = BE_BIDDING_ZONE,
     *,
     timeout: float = 30.0,
+    retries: int = 4,
 ) -> list[RawPrice]:
     """Fetch day-ahead prices covering the Brussels-local days ``start_day``..``end_day``.
 
     ENTSO-E wants ``periodStart``/``periodEnd`` in UTC; we derive them from the Brussels
     midnight boundaries so the returned slots line up with local calendar days.
+
+    The Transparency Platform is frequently slow/overloaded right after day-ahead
+    publication, so transient network failures (timeouts, dropped connections, 5xx) are
+    retried with exponential backoff. Client errors (e.g. 401 bad token) are not retried.
     """
     start_utc = datetime.combine(start_day, time(0)).replace(tzinfo=BRUSSELS).astimezone(UTC)
     end_utc = (
@@ -173,9 +180,33 @@ def fetch_raw_prices(
         "periodEnd": end_utc.strftime("%Y%m%d%H%M"),
     }
     url = f"{ENTSOE_API}?{urllib.parse.urlencode(params)}"
-    with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 (trusted host)
-        xml_text = resp.read().decode("utf-8")
+    xml_text = _get_with_retry(url, timeout=timeout, retries=retries)
     return parse_entsoe_xml(xml_text)
+
+
+def _get_with_retry(url: str, *, timeout: float, retries: int) -> str:
+    """GET ``url`` and return the body, retrying transient failures with backoff."""
+    for attempt in range(1, retries + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 (trusted host)
+                return resp.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            # Retry only on server-side errors; 4xx (bad token, bad query) won't recover.
+            if exc.code < 500 or attempt == retries:
+                raise
+            reason: Exception = exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            if attempt == retries:
+                raise
+            reason = exc
+        backoff = 2.0 * 2 ** (attempt - 1)  # 2s, 4s, 8s, ...
+        print(
+            f"ENTSO-E fetch attempt {attempt}/{retries} failed ({reason}); "
+            f"retrying in {backoff:.0f}s",
+            file=sys.stderr,
+        )
+        _sleep(backoff)
+    raise EntsoeError("unreachable")  # pragma: no cover (loop always returns or raises)
 
 
 def _format(schedule: list[Slot]) -> str:

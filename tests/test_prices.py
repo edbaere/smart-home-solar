@@ -5,11 +5,14 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+import urllib.error
+
 from smart_home.economics import Action
 from smart_home.prices import (
     BRUSSELS,
     EntsoeError,
     RawPrice,
+    _get_with_retry,
     build_schedule,
     default_is_night,
     parse_entsoe_xml,
@@ -106,3 +109,61 @@ def test_build_schedule_maps_prices_to_actions_and_sorts():
         Action.FULL_CURTAIL,  # -200
     ]
     assert all(schedule[i].start <= schedule[i + 1].start for i in range(len(schedule) - 1))
+
+
+# --- network retry --------------------------------------------------------
+
+class _FakeResp:
+    def __init__(self, body):
+        self._body = body
+
+    def read(self):
+        return self._body.encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_get_with_retry_recovers_after_transient_timeout(monkeypatch):
+    calls = {"n": 0}
+
+    def flaky(url, timeout):  # noqa: ARG001
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise TimeoutError("read timed out")
+        return _FakeResp("<ok/>")
+
+    monkeypatch.setattr("smart_home.prices.urllib.request.urlopen", flaky)
+    monkeypatch.setattr("smart_home.prices._sleep", lambda _s: None)
+
+    assert _get_with_retry("https://x", timeout=1.0, retries=4) == "<ok/>"
+    assert calls["n"] == 3  # failed twice, succeeded on the third
+
+
+def test_get_with_retry_gives_up_after_exhausting_retries(monkeypatch):
+    def always_timeout(url, timeout):  # noqa: ARG001
+        raise TimeoutError("read timed out")
+
+    monkeypatch.setattr("smart_home.prices.urllib.request.urlopen", always_timeout)
+    monkeypatch.setattr("smart_home.prices._sleep", lambda _s: None)
+
+    with pytest.raises(TimeoutError):
+        _get_with_retry("https://x", timeout=1.0, retries=3)
+
+
+def test_get_with_retry_does_not_retry_client_errors(monkeypatch):
+    calls = {"n": 0}
+
+    def unauthorized(url, timeout):  # noqa: ARG001
+        calls["n"] += 1
+        raise urllib.error.HTTPError(url, 401, "Unauthorized", hdrs=None, fp=None)
+
+    monkeypatch.setattr("smart_home.prices.urllib.request.urlopen", unauthorized)
+    monkeypatch.setattr("smart_home.prices._sleep", lambda _s: None)
+
+    with pytest.raises(urllib.error.HTTPError):
+        _get_with_retry("https://x", timeout=1.0, retries=4)
+    assert calls["n"] == 1  # 401 is fatal — no retry
