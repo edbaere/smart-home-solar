@@ -6,15 +6,38 @@ The Pi runs two pieces:
 - **`smart_home-controller.service`** → the always-on loop that applies the plan to the
   inverter (fail-safe to 100% on any error / stale plan / shutdown).
 
+## Prerequisites
+
+**Hardware**
+- A Raspberry Pi with both **Ethernet and Wi-Fi** (e.g. Pi 4 / Pi 5 / Pi 3B+), running Raspberry
+  Pi OS Lite (64-bit). It dual-homes: Ethernet = home LAN + internet, Wi-Fi = the inverter's AP.
+- A **HomeWizard P1 meter** (the dongle on your digital meter's P1 port), on your LAN.
+- A **Huawei SUN2000** inverter reachable over Modbus (this project targets the L1 series with
+  its built-in Wi-Fi hotspot; see *Scope & assumptions* in the top-level README).
+
+**Accounts / credentials to gather first**
+- **ENTSO-E API token** — register a free account at
+  <https://transparencyplatform.zendesk.com/hc/en-us/articles/12845911031188> (or the ENTSO-E
+  Transparency Platform), then request the "Web API" security token. Used for the daily price fetch.
+- **HomeWizard local API** — open the HomeWizard Energy app → your P1 meter → *Settings → Meter →
+  Local API* and **enable it**. Note the meter's IP (router DHCP list or the app). `p1.py` won't
+  read without this.
+- **Inverter Wi-Fi PSK** — the password for the inverter's `SUN2000-HV<serial>` hotspot, on the
+  inverter label / in the FusionSolar app (*Device commissioning*).
+- **Inverter Modbus** — ensure **Modbus TCP is enabled** on the inverter (FusionSolar → device
+  settings → communication). Reads are unauthenticated; *writes* (curtailment) need the
+  **installer password** (the local "installer" commissioning account, default often `00000a`).
+
 ## One-time setup
 
 ```bash
 # 1. software + venv + wifi (run on the Pi, in the repo)
 ./scripts/bootstrap_pi.sh
 
-# 2. connect wlan0 -> inverter AP (PSK not echoed)
-sudo nmcli device wifi connect "SUN2000-HV2310422608" password '<PSK>' ifname wlan0
-sudo nmcli connection modify "SUN2000-HV2310422608" ipv4.never-default yes ipv4.route-metric 700
+# 2. connect wlan0 -> inverter AP (PSK not echoed). The SSID is the inverter's hotspot name
+#    (SUN2000-HV<serial>), on the inverter label / in the FusionSolar app.
+sudo nmcli device wifi connect "SUN2000-HV<your-serial>" password '<PSK>' ifname wlan0
+sudo nmcli connection modify "SUN2000-HV<your-serial>" ipv4.never-default yes ipv4.route-metric 700
 
 # 3. secrets
 sudo cp deploy/smart_home.env.example /etc/smart_home.env

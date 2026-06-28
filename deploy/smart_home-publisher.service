@@ -7,7 +7,8 @@ Wants=network-online.target
 Type=simple
 User=solarpi
 WorkingDirectory=/home/solarpi/smart_home
-ExecStart=/home/solarpi/smart_home/.venv/bin/python -m smart_home.controller --p1-host 192.168.3.74 --mqtt-host localhost --dry-run
+EnvironmentFile=/etc/smart_home.env
+ExecStart=/home/solarpi/smart_home/.venv/bin/python -m smart_home.controller --p1-host ${P1_HOST} --mqtt-host localhost --dry-run
 Restart=always
 RestartSec=10
 

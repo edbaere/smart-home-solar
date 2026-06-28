@@ -6,7 +6,9 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-SSID="${1:-SUN2000-HV2310422608}"
+# Inverter Wi-Fi hotspot SSID — printed on the inverter label / shown in the FusionSolar app.
+# Pass it as the first arg, e.g. ./scripts/bootstrap_pi.sh "SUN2000-HVxxxxxxxxxx"
+SSID="${1:-SUN2000-HVxxxxxxxxxx}"
 
 echo "[1/4] apt packages (git, python3-venv)"
 sudo apt-get update -qq

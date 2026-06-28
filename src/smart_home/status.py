@@ -1,7 +1,7 @@
 """Read-only status / pre-flight: live P1 + inverter readings and the derating that
 ``compute_setpoint`` would apply for each action. Never writes to the inverter.
 
-    python -m smart_home.status --p1-host 192.168.3.74
+    python -m smart_home.status --p1-host <p1-ip>
 
 Useful for monitoring and as a safe sanity check before deploying/enabling actuation.
 The number formatting is a pure function (:func:`format_status`) so it is testable offline.
