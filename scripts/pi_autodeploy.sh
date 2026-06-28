@@ -19,7 +19,7 @@ fi
 
 echo "autodeploy: ${PREV:0:7} -> ${REMOTE:0:7}"
 git reset --hard origin/main
-"$VENV/pip" install -q -e ".[hw,mqtt]"
+"$VENV/pip" install -q -e ".[dev,hw,mqtt]"
 sudo cp deploy/smart_home-*.service deploy/smart_home-*.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 
@@ -29,6 +29,6 @@ if "$VENV/pytest" -q; then
 else
     echo "autodeploy: TESTS FAILED at ${REMOTE:0:7} -> rolling back to ${PREV:0:7}" >&2
     git reset --hard "$PREV"
-    "$VENV/pip" install -q -e ".[hw,mqtt]"
+    "$VENV/pip" install -q -e ".[dev,hw,mqtt]"
     exit 1
 fi
