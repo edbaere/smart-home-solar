@@ -29,17 +29,28 @@ views:
           - entity: number.solar_injection_target
             name: Injection target (W)
 
-      - type: glance
+      # Plain-language "what's happening right now". Translates the raw action enum into a
+      # sentence (with the *why*), and reframes the derating % as "% of full power" — far more
+      # legible than two near-identical derating numbers. Markdown is HA-native (no HACS card).
+      - type: markdown
         title: Now
-        entities:
-          - entity: sensor.solar_action
-            name: Action
-          - entity: sensor.solar_belpex
-            name: Price
-          - entity: sensor.solar_derating
-            name: Derating
-          - entity: sensor.solar_target_derating
-            name: Target
+        content: >
+          {% set action = states('sensor.solar_action') %}
+          {% set derating = states('sensor.solar_derating') | float(0) %}
+          {% set target = states('sensor.solar_target_derating') | float(0) %}
+          {% set map = {
+            'NORMAL':       ['🟢','Exporting surplus','Self-consuming and selling the rest at the feed-in price.'],
+            'ZERO_EXPORT':  ['🟠','Holding export at zero','Feed-in price is negative — clipping surplus so nothing is sold.'],
+            'FULL_CURTAIL': ['🔴','Inverter off','Consuming costs less than nothing — the grid pays us to stop producing.'],
+            'MANUAL':       ['🔧','Manual override','Derating forced by hand, ignoring the plan.'],
+            'INJECTION':    ['🎯','Injection limit','Closed-loop holding grid export at the target watts.'] } %}
+          {% set m = map.get(action, ['❔', action, '']) %}
+          ## {{ m[0] }} {{ m[1] }}
+          {{ m[2] }}
+
+          **Inverter output:** {{ (100 - derating) | round(0) }}% of full power{% if (target | round(0)) != (derating | round(0)) %} → ramping to {{ (100 - target) | round(0) }}%{% endif %}
+
+          **Day-ahead price:** {{ states('sensor.solar_belpex') }} EUR/MWh
 
       - type: horizontal-stack
         cards:
