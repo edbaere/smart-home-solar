@@ -107,9 +107,23 @@ def refresh(token: str, path: Path = DEFAULT_PATH, *, days_ahead: int = 1) -> Sc
 
 
 DEFAULT_DEADLINE_HOUR = 17
-FIRST_WINDOW = timedelta(hours=1)        # dense retries for the first hour after start
-FIRST_INTERVAL = timedelta(minutes=5)
-LATER_INTERVAL = timedelta(hours=1)
+# Clock-anchored retry cadence (Brussels local): dense through the ~13–15h publish window when
+# prices land (and ENTSO-E is flakiest), then back off toward the deadline. Each tier is
+# (until_hour, interval); the first tier whose hour the clock hasn't reached yet wins.
+RETRY_TIERS = (
+    (15, timedelta(minutes=5)),    # start .. 15:00  → every 5 min
+    (16, timedelta(minutes=15)),   # 15:00 .. 16:00  → every 15 min
+    (17, timedelta(minutes=30)),   # 16:00 .. 17:00  → every 30 min
+)
+RETRY_FALLBACK = timedelta(hours=1)  # past the last tier (only reached if the deadline is extended)
+
+
+def _retry_interval(now: datetime) -> timedelta:
+    """Retry interval for the current (Brussels-local) clock time — see RETRY_TIERS."""
+    for until_hour, interval in RETRY_TIERS:
+        if now.hour < until_hour:
+            return interval
+    return RETRY_FALLBACK
 
 
 def refresh_until_available(
@@ -123,7 +137,8 @@ def refresh_until_available(
 ) -> bool:
     """Refresh repeatedly until **tomorrow's** prices are cached, or today's deadline passes.
 
-    Cadence: retry every 5 min for the first hour after start, then hourly, stopping once the
+    Cadence (Brussels-local clock): every 5 min until 15:00, every 15 min until 16:00, every
+    30 min until the deadline — dense through the publish window, then backing off. Stops once the
     next attempt would fall at/after ``deadline_hour`` (local). Transient errors and
     not-yet-published prices both just trigger a retry. ``now_fn``/``sleep_fn`` are injected so
     the policy is testable. Returns True if tomorrow's prices were obtained, else False.
@@ -148,7 +163,7 @@ def refresh_until_available(
             if on_event:
                 on_event("success", "tomorrow's prices cached")
             return True
-        interval = FIRST_INTERVAL if (now - start) < FIRST_WINDOW else LATER_INTERVAL
+        interval = _retry_interval(now)
         nxt = now + interval
         if nxt >= deadline:
             if on_event:
