@@ -49,7 +49,7 @@ Non-energy adders ≈ **11.494** EURct/kWh (day) / **10.304** (night).
 
 ```
   ENTSO-E API        ┌─────────────────────┐
-  (A44 day-ahead) ──▶│  daily fetch job    │  runs ~16:00 (prices fixed once published)
+  (A44 day-ahead) ──▶│  daily fetch job    │  runs 12:15, retries until tomorrow's prices publish
    once/day          │  prices + economics │  builds the WHOLE next day's plan
                      └──────────┬──────────┘
                                 ▼
@@ -133,7 +133,8 @@ Confirmed live (SUN2000-4.6KTL-L1, `P_MAX = 5000 W`):
    *(P1 still to be read on-device once the Pi is placed.)*
 2. **Price + economics engine + daily plan** — fetch ENTSO-E A44 day-ahead prices; compute
    `P_feedin`/`P_consume`; emit per-slot decision; persist the whole-day plan
-   (`schedule.json`) refreshed once daily (~16:00 timer). Pure, unit-tested, no hardware.
+   (`schedule.json`) refreshed daily (12:15 timer, retries until tomorrow's prices publish).
+   Pure, unit-tested, no hardware.
    *(done)*
 3. **Actuation (fail-safe first)** — write active-power %; watchdog forces 100% on
    crash/stale-plan/exception. *(built: `controller.py` + systemd units in `deploy/` +

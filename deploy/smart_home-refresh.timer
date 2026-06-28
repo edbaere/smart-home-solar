@@ -1,11 +1,10 @@
 [Unit]
-Description=Refresh the day-ahead plan daily (tomorrow's prices publish ~13:00 CET)
+Description=Refresh the day-ahead plan daily (start 12:15; retry until tomorrow's prices publish)
 
 [Timer]
-OnCalendar=*-*-* 16:00:00
-# Spread the fire time over 10 min so we don't hammer ENTSO-E at the top-of-hour
-# spike (everyone polls at HH:00:00 right as day-ahead data settles).
-RandomizedDelaySec=600
+# Start at 12:15 — before BE day-ahead prices publish (~12:45-13:00 CET). The service then
+# retries (5 min for the first hour, then hourly) until tomorrow's prices are cached or 17:00.
+OnCalendar=*-*-* 12:15:00
 Persistent=true
 
 [Install]

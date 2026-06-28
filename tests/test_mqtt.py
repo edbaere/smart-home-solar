@@ -3,6 +3,7 @@
 from smart_home.economics import Slot
 from smart_home.mqtt import (
     SENSORS,
+    alert_discovery_config,
     discovery_configs,
     injection_limit_discovery_config,
     injection_target_discovery_config,
@@ -162,3 +163,14 @@ def test_injection_target_discovery_is_a_watt_number():
     assert cfg["min"] == 0
     assert cfg["max"] == 5000
     assert cfg["unit_of_measurement"] == "W"
+
+
+# --- day-ahead alert ------------------------------------------------------
+
+def test_alert_discovery_is_a_problem_binary_sensor():
+    cfgs = alert_discovery_config("solarpi", "smart_home/solarpi/dayahead_alert/state")
+    cfg = cfgs["homeassistant/binary_sensor/smart_home_solarpi/dayahead_alert/config"]
+    assert cfg["device_class"] == "problem"
+    assert cfg["payload_on"] == "PROBLEM"
+    assert cfg["payload_off"] == "OK"
+    assert cfg["unique_id"] == "smart_home_solarpi_dayahead_alert"

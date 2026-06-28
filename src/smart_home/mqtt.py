@@ -261,6 +261,52 @@ def injection_target_discovery_config(
     return {f"{discovery_prefix}/number/smart_home_{node_id}/injection_target/config": cfg}
 
 
+# --- day-ahead "prices missing" alert -------------------------------------
+#
+# A HA problem binary_sensor the daily refresh sets if it couldn't fetch tomorrow's prices by the
+# deadline (e.g. ENTSO-E never published / was unreachable all afternoon). Published by the refresh
+# process, which is short-lived — hence the standalone connect/publish/disconnect helper below.
+
+def alert_discovery_config(
+    node_id: str, state_topic: str, discovery_prefix: str = "homeassistant"
+) -> dict[str, dict[str, Any]]:
+    """Return the {config_topic: payload} HA-discovery message for the day-ahead alert."""
+    cfg = {
+        "name": "Day-ahead prices missing",
+        "unique_id": f"smart_home_{node_id}_dayahead_alert",
+        "object_id": "solar_dayahead_alert",
+        "state_topic": state_topic,
+        "device_class": "problem",
+        "payload_on": "PROBLEM",
+        "payload_off": "OK",
+        "icon": "mdi:cash-clock",
+        "device": _device(node_id),
+    }
+    return {f"{discovery_prefix}/binary_sensor/smart_home_{node_id}/dayahead_alert/config": cfg}
+
+
+def publish_dayahead_alert(
+    host: str, port: int = 1883, username: str | None = None, password: str | None = None,
+    *, node_id: str = "solarpi", problem: bool, discovery_prefix: str = "homeassistant",
+) -> None:
+    """One-shot: connect, publish the alert discovery + retained state (PROBLEM/OK), disconnect."""
+    import paho.mqtt.client as mqtt  # noqa: PLC0415
+
+    state_topic = f"smart_home/{node_id}/dayahead_alert/state"
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"smart_home-refresh-{node_id}")
+    if username:
+        client.username_pw_set(username, password)
+    client.connect(host, port, keepalive=30)
+    client.loop_start()
+    try:
+        for topic, payload in alert_discovery_config(node_id, state_topic, discovery_prefix).items():
+            client.publish(topic, json.dumps(payload), retain=True).wait_for_publish()
+        client.publish(state_topic, "PROBLEM" if problem else "OK", retain=True).wait_for_publish()
+    finally:
+        client.loop_stop()
+        client.disconnect()
+
+
 class Publisher:
     """Thin MQTT wrapper: connect, publish HA discovery once, publish state per cycle."""
 

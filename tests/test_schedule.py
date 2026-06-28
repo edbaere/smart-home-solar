@@ -1,10 +1,11 @@
 """Tests for the persisted curtailment plan (no network)."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import smart_home.schedule as sched
 from smart_home.economics import Action, Slot
-from smart_home.schedule import Schedule
+from smart_home.schedule import Schedule, refresh_until_available
 
 BRUSSELS = ZoneInfo("Europe/Brussels")
 
@@ -60,3 +61,79 @@ def test_save_load_roundtrip(tmp_path):
 
 def test_empty_schedule_action_is_none():
     assert Schedule([]).action_at(datetime(2026, 6, 21, 10, 7, tzinfo=BRUSSELS)) is None
+
+
+# --- retry-until-available policy -----------------------------------------
+
+def _today_only():
+    return Schedule([Slot.from_belpex("2026-06-21T10:00:00+02:00", 50.0)])
+
+
+def _with_tomorrow():
+    return Schedule([
+        Slot.from_belpex("2026-06-21T10:00:00+02:00", 50.0),
+        Slot.from_belpex("2026-06-22T10:00:00+02:00", 50.0),
+    ])
+
+
+def test_covers_tomorrow():
+    now = datetime(2026, 6, 21, 12, 30, tzinfo=BRUSSELS)
+    assert _with_tomorrow().covers_tomorrow(now) is True
+    assert _today_only().covers_tomorrow(now) is False
+
+
+class _Clock:
+    def __init__(self, start):
+        self.t = start
+    def now(self):
+        return self.t
+    def sleep(self, secs):
+        self.t += timedelta(seconds=secs)
+
+
+def test_retry_succeeds_when_prices_appear(monkeypatch):
+    clock = _Clock(datetime(2026, 6, 21, 12, 15, tzinfo=BRUSSELS))
+    results = [_today_only(), _today_only(), _with_tomorrow()]  # available on the 3rd try
+    calls = []
+    monkeypatch.setattr(sched, "refresh", lambda *a, **k: (calls.append(1), results.pop(0))[1])
+
+    ok = refresh_until_available("tok", now_fn=clock.now, sleep_fn=clock.sleep)
+
+    assert ok is True
+    assert len(calls) == 3
+    assert clock.t == datetime(2026, 6, 21, 12, 25, tzinfo=BRUSSELS)  # two 5-min waits
+
+
+def test_retry_gives_up_at_deadline_and_signals(monkeypatch):
+    clock = _Clock(datetime(2026, 6, 21, 12, 15, tzinfo=BRUSSELS))
+    monkeypatch.setattr(sched, "refresh", lambda *a, **k: _today_only())  # never has tomorrow
+    events = []
+
+    ok = refresh_until_available(
+        "tok", now_fn=clock.now, sleep_fn=clock.sleep,
+        on_event=lambda kind, detail: events.append(kind),
+    )
+
+    assert ok is False
+    assert "give_up" in events
+    assert clock.t < datetime(2026, 6, 21, 17, 0, tzinfo=BRUSSELS)   # stopped before the deadline
+    assert events.count("attempt") >= 13   # dense first hour (~13) + hourly tail
+
+
+def test_retry_switches_to_hourly_after_first_hour(monkeypatch):
+    clock = _Clock(datetime(2026, 6, 21, 12, 15, tzinfo=BRUSSELS))
+    times = []
+    monkeypatch.setattr(sched, "refresh",
+                        lambda *a, **k: (times.append(clock.now()), _today_only())[1])
+
+    refresh_until_available("tok", now_fn=clock.now, sleep_fn=clock.sleep)
+
+    # first hour: 12:15..13:15 inclusive at 5-min steps = 13 attempts; then hourly
+    first_hour = [t for t in times if t <= datetime(2026, 6, 21, 13, 15, tzinfo=BRUSSELS)]
+    assert len(first_hour) == 13
+    after = [t for t in times if t > datetime(2026, 6, 21, 13, 15, tzinfo=BRUSSELS)]
+    assert after == [
+        datetime(2026, 6, 21, 14, 15, tzinfo=BRUSSELS),
+        datetime(2026, 6, 21, 15, 15, tzinfo=BRUSSELS),
+        datetime(2026, 6, 21, 16, 15, tzinfo=BRUSSELS),
+    ]
