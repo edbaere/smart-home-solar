@@ -5,7 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+# the retry loop can run until 17:00, so disable the default start timeout
+TimeoutStartSec=infinity
 User=solarpi
 WorkingDirectory=/home/solarpi/smart_home
 EnvironmentFile=/etc/smart_home.env
-ExecStart=/home/solarpi/smart_home/.venv/bin/python -m smart_home.schedule refresh
+ExecStart=/home/solarpi/smart_home/.venv/bin/python -m smart_home.schedule refresh --wait-tomorrow

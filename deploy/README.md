@@ -1,8 +1,10 @@
 # Deploy (Raspberry Pi)
 
 The Pi runs two pieces:
-- **`smart_home-refresh.timer`** → daily at 16:00, fetches ENTSO-E day-ahead prices and writes
-  the whole-day plan to `~/.smart_home/schedule.json`.
+- **`smart_home-refresh.timer`** → daily at 12:15, fetches ENTSO-E day-ahead prices and writes
+  the whole-day plan to `~/.smart_home/schedule.json`. If tomorrow's prices aren't published yet
+  it retries every 5 min for the first hour, then hourly, until ~17:00 — and if they never arrive,
+  raises a Home Assistant alert (`binary_sensor` "Day-ahead prices missing", device_class problem).
 - **`smart_home-controller.service`** → the always-on loop that applies the plan to the
   inverter (fail-safe to 100% on any error / stale plan / shutdown).
 
