@@ -117,10 +117,10 @@ def test_retry_gives_up_at_deadline_and_signals(monkeypatch):
     assert ok is False
     assert "give_up" in events
     assert clock.t < datetime(2026, 6, 21, 17, 0, tzinfo=BRUSSELS)   # stopped before the deadline
-    assert events.count("attempt") >= 13   # dense first hour (~13) + hourly tail
+    assert events.count("attempt") >= 13   # many dense attempts before the 17:00 deadline
 
 
-def test_retry_switches_to_hourly_after_first_hour(monkeypatch):
+def test_retry_cadence_escalates_by_clock(monkeypatch):
     clock = _Clock(datetime(2026, 6, 21, 12, 15, tzinfo=BRUSSELS))
     times = []
     monkeypatch.setattr(sched, "refresh",
@@ -128,12 +128,12 @@ def test_retry_switches_to_hourly_after_first_hour(monkeypatch):
 
     refresh_until_available("tok", now_fn=clock.now, sleep_fn=clock.sleep)
 
-    # first hour: 12:15..13:15 inclusive at 5-min steps = 13 attempts; then hourly
-    first_hour = [t for t in times if t <= datetime(2026, 6, 21, 13, 15, tzinfo=BRUSSELS)]
-    assert len(first_hour) == 13
-    after = [t for t in times if t > datetime(2026, 6, 21, 13, 15, tzinfo=BRUSSELS)]
-    assert after == [
-        datetime(2026, 6, 21, 14, 15, tzinfo=BRUSSELS),
-        datetime(2026, 6, 21, 15, 15, tzinfo=BRUSSELS),
-        datetime(2026, 6, 21, 16, 15, tzinfo=BRUSSELS),
-    ]
+    def gaps(lo, hi):  # minute-gaps between consecutive attempts whose hour is in [lo, hi)
+        seg = [t for t in times if lo <= t.hour < hi]
+        return {round((b - a).total_seconds() / 60) for a, b in zip(seg, seg[1:])}
+
+    assert gaps(12, 15) == {5}    # dense 5-min through the ~13–15h publish window
+    assert gaps(15, 16) == {15}   # then back off to 15-min
+    assert gaps(16, 17) == {30}   # then 30-min until the deadline
+    # last attempt is 16:30; the next would be 17:00 == deadline, so it gives up instead
+    assert times[-1] == datetime(2026, 6, 21, 16, 30, tzinfo=BRUSSELS)
