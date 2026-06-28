@@ -115,8 +115,8 @@ dashboard's raw config for ready-made gauges/graphs.
 
 > If your HA was first onboarded **before** the `object_id` discovery field (commit 44524c1),
 > its entities are named `sensor.smart_home_curtailment_*` and `ha-dashboard.yaml` (which uses
-> `sensor.solar_*`) shows no data. Use `deploy/ha-dashboard.legacy-ids.yaml` instead, or rename
-> the entities in the HA UI to the `solar_*` ids.
+> `sensor.solar_*`) shows no data. Rename the entities in the HA UI to the `solar_*` ids, or
+> adjust the dashboard's entity ids to match.
 
 **Going live later — HA switch:** the controller exposes a **"Curtailment control" switch**
 (`switch.solar_curtail_enable`, or `switch.smart_home_curtailment_curtailment_control` on

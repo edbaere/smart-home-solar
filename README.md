@@ -75,9 +75,9 @@ forecast chart, and these controls (all default **off / safe**, and revert safel
 - **Manual override** + **Manual derating %** — set a fixed inverter cap by hand.
 - **Injection limit** + **Injection target (W)** — hold grid export at a chosen wattage.
 
-The two manual modes are mutually exclusive and take precedence over the plan. Ready-to-paste
-dashboards are in [`deploy/`](deploy/) (`ha-dashboard.yaml`, or `…legacy-ids.yaml` — see the note
-in the deploy guide about which entity ids your install uses).
+The two manual modes are mutually exclusive and take precedence over the plan. A ready-to-paste
+example dashboard is in [`deploy/ha-dashboard.yaml`](deploy/ha-dashboard.yaml) (gauges + forecast
+chart) to get you started — adapt it to your own setup.
 
 ## Layout
 
@@ -94,7 +94,7 @@ src/smart_home/
   mqtt.py        # Home Assistant MQTT discovery + state publisher [mqtt extra]
   status.py      # read-only pre-flight: live readings + setpoint preview (no writes)
 tests/           # offline unit tests (no network, no hardware)
-deploy/          # systemd units + env template + Pi deploy guide + HA dashboards
+deploy/          # systemd units + env template + Pi deploy guide + example HA dashboard
 scripts/         # bootstrap_pi.sh (post-flash Pi setup), simulate_curtailment.py
 ```
 
