@@ -183,21 +183,27 @@ def main(argv: list[str] | None = None) -> None:
 
         if args.wait_tomorrow:
             import time as _time  # noqa: PLC0415
+
+            def _alert(problem: bool) -> None:
+                if not args.mqtt_host:
+                    return
+                try:
+                    from smart_home.mqtt import publish_dayahead_alert  # noqa: PLC0415
+                    publish_dayahead_alert(
+                        args.mqtt_host, args.mqtt_port, args.mqtt_user, os.environ.get("MQTT_PW"),
+                        node_id=args.node_id, problem=problem,
+                    )
+                except Exception as exc:  # noqa: BLE001 — alerting must never crash the refresh
+                    print(f"[warn] could not publish HA alert: {exc}", file=sys.stderr)
+
+            _alert(False)  # publish OK up front so the entity exists immediately (clears stale PROBLEM)
             ok = refresh_until_available(
                 token, args.path,
                 now_fn=lambda: datetime.now(BRUSSELS), sleep_fn=_time.sleep,
                 deadline_hour=args.deadline_hour,
                 on_event=lambda kind, detail: print(f"[{kind}] {detail}", flush=True),
             )
-            if args.mqtt_host:
-                try:
-                    from smart_home.mqtt import publish_dayahead_alert  # noqa: PLC0415
-                    publish_dayahead_alert(
-                        args.mqtt_host, args.mqtt_port, args.mqtt_user, os.environ.get("MQTT_PW"),
-                        node_id=args.node_id, problem=not ok,
-                    )
-                except Exception as exc:  # noqa: BLE001 — alerting must never crash the refresh
-                    print(f"[warn] could not publish HA alert: {exc}", file=sys.stderr)
+            _alert(not ok)  # flip to PROBLEM only if we gave up
             sys.exit(0 if ok else 1)
 
         schedule = refresh(token, args.path)
