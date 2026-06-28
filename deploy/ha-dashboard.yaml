@@ -61,8 +61,8 @@ views:
             max: 5000
 
       - type: history-graph
-        title: Power (24h)
-        hours_to_show: 24
+        title: Power (2h)
+        hours_to_show: 2
         entities:
           - sensor.solar_pv_power
           - sensor.solar_load_power
