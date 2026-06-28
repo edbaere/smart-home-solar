@@ -1,0 +1,10 @@
+[Unit]
+Description=smart_home auto-deploy (pull main, test, restart controller if green)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=solarpi
+WorkingDirectory=/home/solarpi/smart_home
+ExecStart=/home/solarpi/smart_home/scripts/pi_autodeploy.sh
