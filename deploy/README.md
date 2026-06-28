@@ -52,12 +52,31 @@ sudo systemctl start smart_home-refresh.service     # build the first plan now
 sudo systemctl enable --now smart_home-controller.service
 ```
 
+## Auto-deploy on merge (optional)
+
+`smart_home-autodeploy.timer` polls `origin/main` every ~5 min; when it changes it checks the new
+code out, reinstalls deps, runs the test suite, and **only restarts the controller if the tests
+pass** — otherwise it rolls back to the previous commit. So merging a reviewed PR lands on the Pi
+within a few minutes, untested code never goes live, and the Pi needs no inbound access.
+
+```bash
+# the Pi's clone must track the repo you merge into:
+git -C ~/smart_home remote set-url origin https://github.com/<owner>/<repo>.git
+sudo cp deploy/smart_home-autodeploy.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now smart_home-autodeploy.timer
+journalctl -u smart_home-autodeploy -f          # watch deploys
+```
+
+The deploy service runs as `solarpi` and uses `sudo` for `systemctl`/unit installs, so `solarpi`
+needs passwordless sudo for those (the default on a single-user Pi set up via `bootstrap_pi.sh`).
+
 ## Operate
 
 ```bash
 systemctl status smart_home-controller
 journalctl -u smart_home-controller -f          # live control decisions
-systemctl list-timers smart_home-refresh.timer
+systemctl list-timers smart_home-refresh.timer smart_home-autodeploy.timer
 ```
 
 **Before enabling the controller, dry-run it** (computes + logs, never writes):

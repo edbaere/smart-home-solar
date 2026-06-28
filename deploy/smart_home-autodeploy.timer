@@ -1,0 +1,11 @@
+[Unit]
+Description=Poll main and auto-deploy to the Pi every ~5 min
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+# don't queue a missed run on top of a slow deploy
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
