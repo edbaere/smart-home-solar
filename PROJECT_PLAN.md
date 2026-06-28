@@ -83,7 +83,7 @@ Non-energy adders ≈ **11.494** EURct/kWh (day) / **10.304** (night).
 ## 3. Control surfaces
 
 ### HomeWizard P1 (sensor) — ✅ validated live
-- At `192.168.3.74` on the **IoT network** (`192.168.3.x`), local API **v1** enabled
+- At `<p1-ip>` on the **IoT network** (`192.168.x.x`), local API **v1** enabled
   (HWE-P1, fw 6.0305). `GET /api/v1/data` → `active_power_w` (**+ = importing, − = injecting**),
   per-phase fields, totals. `smart_home.p1` reads it directly.
 - ⚠️ **3-phase connection, single-phase PV on L1.** Observed: L1 −1826 W (PV export), L3
@@ -103,7 +103,7 @@ shortfall (~12 ct/kWh) is ~10× costlier than the export penalty (~1 ct/kWh).
 ### Huawei SUN2000 (actuator) — built-in WLAN, Modbus **6607** ✅ validated live
 **No SDongle, no Huawei meter, no installer Modbus-TCP toggle needed.** The inverter has no
 SDongle; it joins FusionSolar via its built-in WLAN. Third-party Modbus is reachable on the
-inverter's **Wi-Fi hotspot** (`SUN2000-<SN>` / `Changeme`) at **`192.168.200.1:6607`**, which
+inverter's **Wi-Fi hotspot** (`SUN2000-<SN>` / `<ap-password>`) at **`192.168.200.1:6607`**, which
 uses a proprietary handshake — so we use the **`huawei-solar`** library (`smart_home.inverter`),
 not raw Modbus. (Raw Modbus-TCP 502 is closed; `smart_home.modbus_tcp` is kept for an
 RS485-to-TCP bridge fallback.)
