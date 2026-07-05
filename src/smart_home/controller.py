@@ -45,7 +45,15 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from smart_home.control import DEFAULT_MARGIN_W, compute_setpoint, injection_limit_percent
+import json
+
+from smart_home.control import (
+    DEFAULT_MARGIN_W,
+    MIN_WRITE_INTERVAL_S,
+    WindowController,
+    compute_setpoint,
+    injection_limit_percent,
+)
 from smart_home.economics import Action
 from smart_home.schedule import DEFAULT_PATH, Schedule
 
@@ -57,7 +65,53 @@ DEFAULT_TELEMETRY_INTERVAL_S = 1.0  # MQTT publish / fast-read cadence
 DEFAULT_CURTAIL_STATE_PATH = Path.home() / ".smart_home" / "curtail_enabled"
 DEFAULT_MANUAL_STATE_PATH = Path.home() / ".smart_home" / "manual_derating"
 DEFAULT_INJECTION_STATE_PATH = Path.home() / ".smart_home" / "injection_target"
+DEFAULT_WRITE_COUNTER_PATH = Path.home() / ".smart_home" / "write_counter.json"
 MAX_INJECTION_W = 5000.0
+WRITE_BUDGET_DAY = 400   # backstop: register 40125 is non-volatile, so cap writes/day (a bug guard)
+
+
+class WriteCounter:
+    """Persisted count of inverter derating writes (40125 is non-volatile → flash wear).
+
+    Tracks writes today + cumulative, resets daily, and enforces a per-day budget backstop so a
+    bug can't storm the flash. Fail-safe writes bypass the budget (safety over wear).
+    """
+
+    def __init__(self, path: Path = DEFAULT_WRITE_COUNTER_PATH, budget: int = WRITE_BUDGET_DAY):
+        self._path = Path(path)
+        self.budget = budget
+        d = self._load()
+        self.date, self.today, self.total = d
+
+    def _load(self) -> tuple[str, int, int]:
+        try:
+            d = json.loads(self._path.read_text())
+            return d.get("date", ""), int(d.get("today", 0)), int(d.get("total", 0))
+        except Exception:
+            return "", 0, 0
+
+    def _today(self) -> str:
+        return datetime.now(BRUSSELS).strftime("%Y-%m-%d")
+
+    def allowed(self) -> bool:
+        if self._today() != self.date:
+            return True
+        if self.today >= self.budget:
+            log.warning("daily write budget %d reached (total=%d) — holding setpoint", self.budget, self.total)
+            return False
+        return True
+
+    def bump(self) -> None:
+        t = self._today()
+        if t != self.date:
+            self.date, self.today = t, 0
+        self.today += 1
+        self.total += 1
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._path.write_text(json.dumps({"date": self.date, "today": self.today, "total": self.total}))
+        except Exception:
+            log.exception("write-counter persist failed")
 
 log = logging.getLogger("smart_home.controller")
 
@@ -282,6 +336,8 @@ async def run(
     gate = CurtailGate(curtail_state_path)
     manual = ManualOverride(manual_state_path)        # enabled starts OFF (reverts on restart)
     injection = InjectionOverride(injection_state_path)  # mutually exclusive with `manual`
+    writes = WriteCounter()                           # flash-wear guard (40125 is non-volatile)
+    wc = WindowController()                           # tuned defaults (docs/curtailment-redesign.md)
 
     inv = InverterClient(inverter_host, inverter_port, user, password)
     await inv.connect()
@@ -352,6 +408,7 @@ async def run(
     derating_pct: float | None = None
     belpex: float | None = None
     last_plan_sig: tuple | None = None  # republish the forecast only when the plan changes
+    last_inj_write = -1e18              # monotonic ts of the last injection-override write
     tick = 0
 
     try:
@@ -387,65 +444,77 @@ async def run(
                                 log.debug("plan publish failed", exc_info=True)
                     reading = await inv.read()
                     p1r = await asyncio.to_thread(p1_mod.read, p1_host)
-                    pv = reading["active_power"]
+                    pv = reading["active_power"] or 0.0
+                    p_max = reading["p_max"] or 5000.0
                     cur = reading["derating"] if reading["derating"] is not None else FULL_POWER_PCT
-                    step = plan_step(
-                        action,
-                        inverter_active_power_w=pv or 0.0,
-                        p1_net_w=p1r.active_power_w,
-                        p_max_w=reading["p_max"] or 5000.0,
-                        current_derating_pct=cur,
-                        margin_w=margin_w,
-                        deadband_pct=deadband_pct,
-                    )
                     derating_pct = reading["derating"]
+                    load_w = pv + p1r.active_power_w          # p1 net: + = importing
+                    export_w = -p1r.active_power_w            # + = exporting
+                    now_mono = loop.time()
+                    # Keep the window controller aligned with the real (persistent) setpoint each
+                    # tick: 40125 reads back the commanded value, so this is a read-first compare
+                    # and also picks up any external change (manual mode, reboot, etc.).
+                    wc.sync(cur)
+
                     # Precedence: manual derating > injection limit > plan (when curtailment
                     # enabled) > full power. The two manual modes are mutually exclusive (the HA
                     # callbacks enforce that). `--dry-run` is a hard override on every write.
                     manual_on = manual.enabled and not dry_run
                     injection_on = injection.enabled and not dry_run
                     curtail_on = gate.enabled and not dry_run
+                    reason = ""
+
                     if manual_on:
-                        target_pct = manual.pct           # fixed % cap, ignore the plan
-                        action_label, mode = "MANUAL", "manual"
+                        target_pct, action_label, mode = manual.pct, "MANUAL", "manual"
+                        if abs(target_pct - cur) >= deadband_pct and writes.allowed():
+                            await inv.set_derating(target_pct); writes.bump()
+                            derating_pct = target_pct
+                            log.info("manual wrote derating=%.1f%%", target_pct)
                     elif injection_on:
                         target_pct = injection_limit_percent(
-                            injection.target_w,
-                            inverter_active_power_w=pv or 0.0,
-                            p1_net_w=p1r.active_power_w,
-                            p_max_w=reading["p_max"] or 5000.0,
+                            injection.target_w, inverter_active_power_w=pv,
+                            p1_net_w=p1r.active_power_w, p_max_w=p_max,
                         )
                         action_label, mode = "INJECTION", f"inj<={injection.target_w:.0f}W"
+                        if (abs(target_pct - cur) >= deadband_pct
+                                and now_mono - last_inj_write >= MIN_WRITE_INTERVAL_S
+                                and writes.allowed()):
+                            await inv.set_derating(target_pct); writes.bump()
+                            derating_pct, last_inj_write = target_pct, now_mono
+                            log.info("injection wrote derating=%.1f%%", target_pct)
                     else:
-                        target_pct = step.target_percent  # show the planned target
-                        action_label = step.action.value
+                        dec = wc.decide(
+                            action=action, belpex=belpex or 0.0,
+                            night=(slot.night if slot is not None else False),
+                            export_w=export_w, load_w=load_w, p_max_w=p_max, now=now_mono,
+                        )
+                        target_pct, action_label, reason = dec.target_percent, action.value, dec.reason
                         mode = "on" if curtail_on else ("dry-run" if dry_run else "off")
+                        if curtail_on and dec.should_write and writes.allowed():
+                            await inv.set_derating(dec.target_percent); writes.bump()
+                            derating_pct = dec.target_percent
+                            log.info("wrote derating=%.1f%% (%s)", dec.target_percent, dec.reason)
+                        elif not curtail_on and not dry_run and cur < FULL_POWER_PCT - deadband_pct:
+                            # gate off but inverter still curtailed -> restore once (read-first)
+                            await inv.set_derating(FULL_POWER_PCT); writes.bump()
+                            derating_pct = FULL_POWER_PCT
+                            log.info("curtail off -> restored derating=%.0f%%", FULL_POWER_PCT)
                     log.info(
-                        "action=%s target=%.1f%% (cur=%s%%) mode=%s prod=%sW net=%+dW :: %s",
+                        "action=%s target=%.1f%% (cur=%s%%) mode=%s prod=%.0fW net=%+dW "
+                        "writes[today=%d total=%d] :: %s",
                         action_label, target_pct, reading["derating"], mode,
-                        pv, int(p1r.active_power_w), step.reason,
+                        pv, int(p1r.active_power_w), writes.today, writes.total, reason,
                     )
-                    if manual_on or injection_on:
-                        if abs(target_pct - cur) >= deadband_pct:
-                            await inv.set_derating(target_pct)
-                            log.info("%s wrote derating=%.1f%%", action_label.lower(), target_pct)
-                            derating_pct = target_pct
-                    elif curtail_on:
-                        if step.should_write:
-                            await inv.set_derating(step.target_percent)
-                            log.info("wrote derating=%.1f%%", step.target_percent)
-                            derating_pct = step.target_percent
-                    elif not dry_run and cur < FULL_POWER_PCT - deadband_pct:
-                        await inv.set_derating(FULL_POWER_PCT)
-                        log.info("manual/curtail off -> restored derating=%.0f%%", FULL_POWER_PCT)
-                        derating_pct = FULL_POWER_PCT
                 except Exception:
                     log.exception("control cycle failed -> fail-safe to %.0f%%", FULL_POWER_PCT)
                     action, action_label, target_pct = Action.NORMAL, Action.NORMAL.value, FULL_POWER_PCT
                     pv, p1r = None, None  # force a fresh light read below
-                    if not dry_run:
+                    # Read-first: only write 100 if we believe the inverter is curtailed. 40125 is
+                    # non-volatile, so re-writing 100 every failed tick would needlessly wear flash.
+                    if not dry_run and (derating_pct is None or derating_pct < FULL_POWER_PCT - 1):
                         try:
-                            await inv.set_derating(FULL_POWER_PCT)
+                            await inv.set_derating(FULL_POWER_PCT); writes.bump()
+                            derating_pct = FULL_POWER_PCT
                         except Exception:
                             log.exception("FAIL-SAFE WRITE FAILED")
 
@@ -476,11 +545,13 @@ async def run(
     finally:
         if pub is not None:
             pub.close()
-        # leaving control -> restore full production so we never strand the inverter curtailed
-        if not dry_run:
+        # leaving control -> restore full production so we never strand the inverter curtailed.
+        # Read-first on the last-known setpoint: skip the write if we're already at 100 (40125 is
+        # non-volatile, and autodeploy restarts the service often — no need to re-write 100 each time).
+        if not dry_run and (derating_pct is None or derating_pct < FULL_POWER_PCT - 1):
             log.info("shutting down -> restoring 100%%")
             try:
-                await inv.set_derating(FULL_POWER_PCT)
+                await inv.set_derating(FULL_POWER_PCT); writes.bump()
             except Exception:
                 log.exception("shutdown fail-safe write failed")
 
