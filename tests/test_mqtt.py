@@ -174,3 +174,42 @@ def test_alert_discovery_is_a_problem_binary_sensor():
     assert cfg["payload_on"] == "PROBLEM"
     assert cfg["payload_off"] == "OK"
     assert cfg["unique_id"] == "smart_home_solarpi_dayahead_alert"
+
+
+# --- monitoring fields (write counter + live window + policy) ---------------
+
+def test_state_payload_monitoring_fields():
+    from smart_home.mqtt import state_payload as sp
+    p = sp(
+        action="ZERO_EXPORT", derating_pct=30.0, pv_power_w=2000.0, grid_net_w=-400.0,
+        writes_today=12, writes_total=3456,
+        window_low=75.0, window_high=1190.0, window_target=365.0, inj_cost_ratio=0.088,
+    )
+    assert p["export_power"] == 400            # = -grid_net (exporting 400 W)
+    assert p["writes_today"] == 12 and p["writes_total"] == 3456
+    assert (p["window_low"], p["window_high"], p["window_target"]) == (75, 1190, 365)
+    assert p["inj_cost_ratio"] == 0.088
+
+
+def test_state_payload_window_none_outside_zero_export():
+    from smart_home.mqtt import state_payload as sp
+    p = sp(action="NORMAL", derating_pct=100.0, pv_power_w=1000.0, grid_net_w=200.0)
+    # window fields absent (None) so HA shows a gap, not a misleading 0
+    assert p["window_low"] is None and p["window_target"] is None and p["inj_cost_ratio"] is None
+    assert p["export_power"] == -200           # importing 200 W
+
+
+def test_new_sensors_registered():
+    cfgs = discovery_configs("solarpi", "smart_home/solarpi/state")
+    for key in ("writes_total", "writes_today", "export_power", "window_low",
+                "window_high", "window_target", "inj_cost_ratio"):
+        assert f"homeassistant/sensor/smart_home_solarpi/{key}/config" in cfgs
+    assert cfgs["homeassistant/sensor/smart_home_solarpi/writes_total/config"]["state_class"] == "total_increasing"
+
+
+def test_policy_discovery_has_attributes_topic():
+    from smart_home.mqtt import policy_discovery_config
+    cfgs = policy_discovery_config("solarpi", "smart_home/solarpi/policy")
+    cfg = cfgs["homeassistant/sensor/smart_home_solarpi/policy/config"]
+    assert cfg["json_attributes_topic"] == "smart_home/solarpi/policy"
+    assert cfg["entity_category"] == "diagnostic"
