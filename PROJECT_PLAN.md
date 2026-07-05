@@ -58,7 +58,7 @@ Non-energy adders ≈ **11.494** EURct/kWh (day) / **10.304** (night).
                                 ▼
    HomeWizard P1 ─────▶┌──────────────────┐──────▶ Huawei SUN2000
    net power (1 Hz)    │  control daemon  │ Modbus  active-power % (reg ~40125)
-                       │  (PI loop +      │  TCP    (volatile setpoint)
+                       │  (PI loop +      │  TCP    (NON-volatile setpoint!)
                        │   watchdog)      │
                        └──────────────────┘
                             │ telemetry
@@ -158,7 +158,12 @@ Confirmed live (SUN2000-4.6KTL-L1, `P_MAX = 5000 W`):
 
 - **Fail open (no curtailment):** any failure → restore 100% active power. Never leave the
   inverter stuck at 0.
-- Active-power setpoint is **volatile** (resets to 100% on inverter reboot) — good fail-safe.
+- ⚠️ Active-power setpoint (40125) is **NON-volatile** — verified 2026-07-05: a written value
+  **survives a full inverter power-cycle** (it does NOT reset to 100% on reboot; the earlier
+  "volatile" note was our own shutdown-writes-100%). Two consequences: (1) **every write wears
+  flash** → writes are minimised via the price-scaled window controller (see
+  docs/curtailment-redesign.md); (2) a reboot won't self-heal a curtailed inverter, so the
+  daemon owns restoring 100% (read-first) on startup/shutdown.
 - **Rate-limit** Modbus writes; deadband + hysteresis on the PI loop to avoid oscillation.
 - All times in **`Europe/Brussels`** with DST handling.
 - Plan for **15-minute** slots (BE market granularity + quarter-hour metering).

@@ -105,6 +105,63 @@ def decide(belpex: float, card: TariffCard = IMEWO, *, night: bool = False) -> A
     return Action.NORMAL
 
 
+# --- price-scaled curtailment window (ZERO_EXPORT) ------------------------
+#
+# In ZERO_EXPORT we control an "acceptable export window" [L, U] in watts of grid export and only
+# write to the inverter when export leaves it. The window is asymmetric: the floor L (import guard)
+# stays tight at every price because importing is always expensive; the ceiling U carries the price
+# scaling — wide when injecting is nearly free, collapsing to the floor when injecting is costly.
+# See docs/curtailment-redesign.md.
+
+FLOOR_W = 75.0      # import-guard export floor at r=0 (W)
+CEIL_MAX_W = 1200.0  # export tolerance ceiling at r=0 (W)
+AIM_MAX_W = 400.0   # target over-production (aim point) at r=0 (W)
+CEIL_CURVE_K = 2.0  # ceiling bend: 1 = linear, 2 = hold-wide-then-drop ("only when it matters")
+
+
+def injection_penalty(belpex: float, card: TariffCard = IMEWO) -> float:
+    """Cost to export 1 kWh, in EURct/kWh (positive when injecting costs us; = −feedin_price)."""
+    return -feedin_price(belpex, card)
+
+
+def relative_injection_cost(belpex: float, card: TariffCard = IMEWO, *, night: bool = False) -> float:
+    """`r` ∈ [0,1]: how expensive injecting is relative to importing.
+
+    0 → injecting nearly free next to importing (be lazy, wide window, few writes).
+    1 → injecting as costly as importing (be precise, tight window).
+    """
+    p = injection_penalty(belpex, card)
+    c = consume_price(belpex, card, night=night)
+    if c <= 0:  # importing is free/paid (we're below FULL_CURTAIL anyway) → treat injecting as maximally costly
+        return 1.0
+    return max(0.0, min(1.0, p / c))
+
+
+def curtail_window(
+    belpex: float,
+    card: TariffCard = IMEWO,
+    *,
+    night: bool = False,
+    floor_w: float = FLOOR_W,
+    ceil_max_w: float = CEIL_MAX_W,
+    aim_max_w: float = AIM_MAX_W,
+    k: float = CEIL_CURVE_K,
+) -> tuple[float, float, float]:
+    """Return `(L, U, Tset)` in watts of grid export for the current slot.
+
+    - `L` floor / import guard: `floor_w · (1 − r)` (tight always).
+    - `U` ceiling / export tolerance: `L + (ceil_max_w − L) · (1 − r^k)` — `k>1` holds it wide
+      while injecting is cheap and drops it sharply only as `r → 1` ("only when it matters").
+    - `Tset` where to aim export when we write: `aim_max_w · (1 − r)`, clamped into `[L, U]`.
+    """
+    r = relative_injection_cost(belpex, card, night=night)
+    one_minus_r = 1.0 - r
+    L = floor_w * one_minus_r
+    U = L + (ceil_max_w - L) * (1.0 - r ** k)
+    Tset = max(L, min(U, aim_max_w * one_minus_r))
+    return (L, U, Tset)
+
+
 @dataclass(frozen=True)
 class Slot:
     """A priced market slot and its resulting decision (for schedules / logging)."""
