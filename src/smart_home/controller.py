@@ -393,6 +393,15 @@ async def run(
             pub.publish_injection_number_state(injection.target_w)
         log.info("MQTT publishing to %s:%d (curtailment %s)", mqtt_host, mqtt_port,
                  "dry-run" if dry_run else ("ENABLED" if gate.enabled else "disabled"))
+        # Static policy config (retained) for the diagnostics card — publish once.
+        pub.publish_policy({
+            "summary": (f"ceil {int(wc.ceil_max_w)}W · aim {int(wc.aim_max_w)}W · "
+                        f"floor {int(wc.floor_w)}W · k{wc.k:g} · dwell {int(wc.dwell_up_s)}/"
+                        f"{int(wc.dwell_down_s)}s · min-int {int(wc.min_interval_s)}s"),
+            "ceil_max_w": wc.ceil_max_w, "aim_max_w": wc.aim_max_w, "floor_w": wc.floor_w,
+            "k": wc.k, "dwell_up_s": wc.dwell_up_s, "dwell_down_s": wc.dwell_down_s,
+            "min_interval_s": wc.min_interval_s, "write_budget_day": writes.budget,
+        })
     if pub is not None:
         from smart_home.mqtt import plan_payload, state_payload  # noqa: PLC0415
     stop = asyncio.Event()
@@ -407,6 +416,7 @@ async def run(
     target_pct = FULL_POWER_PCT
     derating_pct: float | None = None
     belpex: float | None = None
+    win_low = win_high = win_target = win_r = None  # live window (monitoring)
     last_plan_sig: tuple | None = None  # republish the forecast only when the plan changes
     last_inj_write = -1e18              # monotonic ts of the last injection-override write
     tick = 0
@@ -463,6 +473,7 @@ async def run(
                     injection_on = injection.enabled and not dry_run
                     curtail_on = gate.enabled and not dry_run
                     reason = ""
+                    win_low = win_high = win_target = win_r = None  # set only in ZERO_EXPORT (plan) mode
 
                     if manual_on:
                         target_pct, action_label, mode = manual.pct, "MANUAL", "manual"
@@ -489,6 +500,8 @@ async def run(
                             export_w=export_w, load_w=load_w, p_max_w=p_max, now=now_mono,
                         )
                         target_pct, action_label, reason = dec.target_percent, action.value, dec.reason
+                        win_low, win_high, win_target, win_r = (
+                            wc.last_low, wc.last_high, wc.last_target, wc.last_r)
                         mode = "on" if curtail_on else ("dry-run" if dry_run else "off")
                         if curtail_on and dec.should_write and writes.allowed():
                             await inv.set_derating(dec.target_percent); writes.bump()
@@ -532,6 +545,9 @@ async def run(
                         l1_w=p1r.active_power_l1_w, l2_w=p1r.active_power_l2_w, l3_w=p1r.active_power_l3_w,
                         import_total_kwh=p1r.total_import_kwh, export_total_kwh=p1r.total_export_kwh,
                         belpex=belpex,
+                        writes_today=writes.today, writes_total=writes.total,
+                        window_low=win_low, window_high=win_high, window_target=win_target,
+                        inj_cost_ratio=win_r,
                     ))
                 except Exception:
                     log.debug("telemetry tick failed", exc_info=True)

@@ -27,6 +27,7 @@ from smart_home.economics import (
     FLOOR_W,
     Action,
     curtail_window,
+    relative_injection_cost,
 )
 
 DEFAULT_MARGIN_W = 200.0  # over-production buffer: we'd rather slightly export than import
@@ -166,6 +167,11 @@ class WindowController:
         self.breach_side: str | None = None
         self.breach_start = 0.0
         self.last_write = -1e18
+        # last live window (for monitoring); None outside ZERO_EXPORT
+        self.last_low: float | None = None
+        self.last_high: float | None = None
+        self.last_target: float | None = None
+        self.last_r: float | None = None
 
     def sync(self, current_pct: float) -> None:
         """Seed the last-commanded value from a fresh inverter read (enables read-first)."""
@@ -195,9 +201,11 @@ class WindowController:
         """Return whether to write and the target derating % for this control tick."""
         if action is Action.NORMAL:
             self.breach_side = None
+            self.last_low = self.last_high = self.last_target = self.last_r = None
             return self._commit(100.0, now, mark_write=False, reason="normal")
         if action is Action.FULL_CURTAIL:
             self.breach_side = None
+            self.last_low = self.last_high = self.last_target = self.last_r = None
             return self._commit(0.0, now, mark_write=False, reason="full-curtail")
 
         # ZERO_EXPORT: windowed control
@@ -205,6 +213,8 @@ class WindowController:
             belpex, night=night, floor_w=self.floor_w, ceil_max_w=self.ceil_max_w,
             aim_max_w=self.aim_max_w, k=self.k,
         )
+        self.last_low, self.last_high, self.last_target = low, high, target_export
+        self.last_r = relative_injection_cost(belpex, night=night)
         side = window_breach(export_w, low, high)
         lc = 100.0 if self.last_command is None else self.last_command
         if side is None:

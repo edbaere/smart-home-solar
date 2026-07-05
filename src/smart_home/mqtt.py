@@ -29,7 +29,20 @@ SENSORS: list[tuple[str, str, str | None, str | None, str | None]] = [
     ("target_derating", "Target derating",      "%",  None,   "measurement"),
     ("belpex",       "Day-ahead price",      "EUR/MWh", None, "measurement"),
     ("action",       "Curtailment action",   None,  None,     None),
+    # --- monitoring (write-minimisation + policy behaviour) ---
+    ("export_power",  "Grid export",             "W",  "power", "measurement"),
+    ("writes_today",  "Inverter adjustments today", "writes", None, "measurement"),
+    ("writes_total",  "Inverter adjustments (lifetime)", "writes", None, "total_increasing"),
+    ("window_low",    "Export band floor",       "W",  "power", "measurement"),
+    ("window_high",   "Export band ceiling",     "W",  "power", "measurement"),
+    ("window_target", "Export target",           "W",  "power", "measurement"),
+    ("inj_cost_ratio", "Injection cost ratio",   None, None,    "measurement"),
 ]
+
+
+def _r(v: float | None) -> float | None:
+    """Round a value for publishing, preserving None (so HA shows a gap, not 0)."""
+    return None if v is None else round(v)
 
 
 def _device(node_id: str) -> dict[str, Any]:
@@ -79,12 +92,23 @@ def state_payload(
     import_total_kwh: float | None = None,
     export_total_kwh: float | None = None,
     belpex: float | None = None,
+    writes_today: int | None = None,
+    writes_total: int | None = None,
+    window_low: float | None = None,
+    window_high: float | None = None,
+    window_target: float | None = None,
+    inj_cost_ratio: float | None = None,
 ) -> dict[str, Any]:
-    """Build the shared JSON state. load = pv + grid_net (grid_net + = import)."""
+    """Build the shared JSON state. load = pv + grid_net (grid_net + = import).
+
+    ``export_power`` is grid export (positive when exporting = −grid_net), published so the
+    "window tracking" chart can show export against the [floor, ceiling] band on one axis. The
+    window_* fields are only set during ZERO_EXPORT (None otherwise → HA shows a gap)."""
     return {
         "pv_power": round(pv_power_w),
         "grid_power": round(grid_net_w),
         "load_power": round(pv_power_w + grid_net_w),
+        "export_power": round(-grid_net_w),
         "l1_power": None if l1_w is None else round(l1_w),
         "l2_power": None if l2_w is None else round(l2_w),
         "l3_power": None if l3_w is None else round(l3_w),
@@ -94,6 +118,12 @@ def state_payload(
         "target_derating": target_derating_pct,
         "belpex": belpex,
         "action": action,
+        "writes_today": writes_today,
+        "writes_total": writes_total,
+        "window_low": _r(window_low),
+        "window_high": _r(window_high),
+        "window_target": _r(window_target),
+        "inj_cost_ratio": None if inj_cost_ratio is None else round(inj_cost_ratio, 3),
     }
 
 
@@ -144,6 +174,30 @@ def plan_payload(slots: list[Any]) -> dict[str, Any]:
         "covers_end": slots[-1].start if slots else None,
         "points": points,
     }
+
+
+# --- curtailment policy (static config, for the diagnostics card) ---------
+#
+# The tuned window/dwell/budget parameters don't change at runtime, so we publish them once
+# (retained) as attributes on a diagnostic sensor. A markdown card renders them so the dashboard
+# always shows what tuning is actually live (and auto-updates if it's ever re-tuned).
+
+def policy_discovery_config(
+    node_id: str, policy_topic: str, discovery_prefix: str = "homeassistant"
+) -> dict[str, dict[str, Any]]:
+    """Return the {config_topic: payload} HA-discovery message for the policy sensor."""
+    cfg = {
+        "name": "Curtailment policy",
+        "unique_id": f"smart_home_{node_id}_policy",
+        "object_id": "solar_policy",  # -> sensor.solar_policy
+        "state_topic": policy_topic,
+        "value_template": "{{ value_json.summary }}",
+        "json_attributes_topic": policy_topic,
+        "icon": "mdi:tune-variant",
+        "entity_category": "diagnostic",
+        "device": _device(node_id),
+    }
+    return {f"{discovery_prefix}/sensor/smart_home_{node_id}/policy/config": cfg}
 
 
 # --- curtailment enable switch --------------------------------------------
@@ -325,6 +379,7 @@ class Publisher:
         self._discovery_prefix = discovery_prefix
         self._state_topic = f"smart_home/{node_id}/state"
         self._plan_topic = f"smart_home/{node_id}/plan"
+        self._policy_topic = f"smart_home/{node_id}/policy"
         self._switch_state_topic = f"smart_home/{node_id}/curtail/state"
         self._switch_cmd_topic = f"smart_home/{node_id}/curtail/set"
         self._manual_sw_state_topic = f"smart_home/{node_id}/manual/state"
@@ -362,6 +417,8 @@ class Publisher:
         for topic, payload in discovery_configs(self._node_id, self._state_topic, self._discovery_prefix).items():
             self._client.publish(topic, json.dumps(payload), retain=True)
         for topic, payload in plan_discovery_config(self._node_id, self._plan_topic, self._discovery_prefix).items():
+            self._client.publish(topic, json.dumps(payload), retain=True)
+        for topic, payload in policy_discovery_config(self._node_id, self._policy_topic, self._discovery_prefix).items():
             self._client.publish(topic, json.dumps(payload), retain=True)
         if on_curtail_command is not None:
             self._publish_discovery(switch_discovery_config(
@@ -418,6 +475,11 @@ class Publisher:
         """Publish the full day-ahead plan (retained) for the forecast chart."""
         if self._client is not None:
             self._client.publish(self._plan_topic, json.dumps(payload), retain=True)
+
+    def publish_policy(self, payload: dict[str, Any]) -> None:
+        """Publish the static curtailment-policy config (retained) for the diagnostics card."""
+        if self._client is not None:
+            self._client.publish(self._policy_topic, json.dumps(payload), retain=True)
 
     def publish_switch_state(self, enabled: bool) -> None:
         """Reflect the curtailment switch state back to HA (retained)."""

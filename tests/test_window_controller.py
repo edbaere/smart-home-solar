@@ -93,3 +93,21 @@ def test_read_first_no_write_when_already_at_target():
     assert not ze(wc, 1500, 1000, now=200).should_write    # re-prime breach (dwell not met)
     # dwell + interval satisfied, but target unchanged -> no redundant write
     assert not ze(wc, 1500, 1000, now=265).should_write
+
+
+# --- live window exposure (for monitoring) --------------------------------
+
+def test_decide_exposes_live_window_in_zero_export():
+    wc = mk()
+    ze(wc, export_w=400, load_w=1000, now=0)
+    assert wc.last_low is not None and wc.last_high is not None
+    assert wc.last_low < wc.last_target < wc.last_high     # target sits inside the band
+    assert 0.0 <= wc.last_r <= 1.0
+
+
+def test_decide_clears_window_outside_zero_export():
+    wc = mk()
+    ze(wc, export_w=400, load_w=1000, now=0)               # populate
+    wc.decide(action=Action.NORMAL, belpex=50.0, night=False,
+              export_w=0, load_w=0, p_max_w=PMAX, now=1)
+    assert wc.last_low is None and wc.last_target is None and wc.last_r is None
