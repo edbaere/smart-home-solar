@@ -97,11 +97,36 @@ class Schedule:
         return cls.from_json(Path(path).read_text())
 
 
+MIN_SLOTS_PER_DAY = 90
+# ENTSO-E can return a stray single-point stub for a day whose day-ahead prices haven't actually
+# published yet (observed: one slot at the very next midnight, priced 0 EUR/MWh — which our own
+# economics correctly reads as "unprofitable to export" and decides ZERO_EXPORT for). Left alone,
+# that lone slot satisfies covers_tomorrow() and makes refresh_until_available() declare success
+# and stop retrying, even though the real ~96 quarter-hour slots were never fetched. A genuinely
+# published day has ~96 slots (92-100 across the two DST-transition days); drop anything far
+# short of that rather than deciding — and displaying — a curtailment action from a fabricated
+# price.
+
+
+def _drop_incomplete_days(slots: list[Slot], min_slots: int = MIN_SLOTS_PER_DAY) -> list[Slot]:
+    counts: dict[date, int] = {}
+    for s in slots:
+        d = _parse(s.start).date()
+        counts[d] = counts.get(d, 0) + 1
+    complete_dates = {d for d, n in counts.items() if n >= min_slots}
+    return [s for s in slots if _parse(s.start).date() in complete_dates]
+
+
 def refresh(token: str, path: Path = DEFAULT_PATH, *, days_ahead: int = 1) -> Schedule:
-    """Fetch today..today+days_ahead, build the plan, and persist it atomically."""
+    """Fetch today..today+days_ahead, build the plan, and persist it atomically.
+
+    Drops any calendar date that isn't fully published yet (see :func:`_drop_incomplete_days`)
+    before persisting, so a stray stub never gets mistaken for a real day-ahead plan.
+    """
     today = date.today()
     raw = fetch_raw_prices(token, today, today + timedelta(days=days_ahead))
-    schedule = Schedule(build_schedule(raw))
+    slots = _drop_incomplete_days(build_schedule(raw))
+    schedule = Schedule(slots)
     schedule.save(path)
     return schedule
 
