@@ -63,6 +63,31 @@ def test_empty_schedule_action_is_none():
     assert Schedule([]).action_at(datetime(2026, 6, 21, 10, 7, tzinfo=BRUSSELS)) is None
 
 
+# --- dropping incomplete (not-yet-published) days --------------------------
+
+def _full_day(day: str, n: int = 96) -> list[Slot]:
+    """``n`` quarter-hour slots starting at ``day`` 00:00 Brussels (CEST, +02:00)."""
+    return [
+        Slot.from_belpex(f"{day}T{(i * 15) // 60:02d}:{(i * 15) % 60:02d}:00+02:00", 50.0)
+        for i in range(n)
+    ]
+
+
+def test_drop_incomplete_days_drops_stray_stub():
+    # A real published day (96 quarter-hour slots) plus a single stray stub slot for the next
+    # day (ENTSO-E's not-yet-published placeholder) — the stub must be dropped entirely.
+    slots = _full_day("2026-06-21") + [Slot.from_belpex("2026-06-22T00:00:00+02:00", 0.0)]
+    kept = sched._drop_incomplete_days(slots)
+    assert len(kept) == 96
+    assert all(sched._parse(s.start).date().isoformat() == "2026-06-21" for s in kept)
+
+
+def test_drop_incomplete_days_keeps_two_full_days():
+    slots = _full_day("2026-06-21") + _full_day("2026-06-22")
+    kept = sched._drop_incomplete_days(slots)
+    assert len(kept) == 192
+
+
 # --- retry-until-available policy -----------------------------------------
 
 def _today_only():
