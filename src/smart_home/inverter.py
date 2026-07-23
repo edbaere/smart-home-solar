@@ -32,6 +32,7 @@ class InverterReading:
     device_status: str | None = None
     input_power_w: float | None = None              # DC input
     active_power_w: float | None = None             # AC output = PV production
+    yield_total_kwh: float | None = None            # 32106, lifetime cumulative, inverter's own meter
     grid_frequency_hz: float | None = None
     internal_temperature_c: float | None = None
     control_mode: str | None = None                 # ACTIVE_POWER_CONTROL_MODE
@@ -49,6 +50,7 @@ def from_values(v: dict[str, Any]) -> InverterReading:
         device_status=v.get("device_status"),
         input_power_w=v.get("input_power"),
         active_power_w=v.get("active_power"),
+        yield_total_kwh=v.get("yield_total"),
         grid_frequency_hz=v.get("grid_frequency"),
         internal_temperature_c=v.get("internal_temperature"),
         control_mode=v.get("active_power_control_mode"),
@@ -70,6 +72,7 @@ async def read(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> InverterRe
         "device_status": rn.DEVICE_STATUS,
         "input_power": rn.INPUT_POWER,
         "active_power": rn.ACTIVE_POWER,
+        "yield_total": rn.ACCUMULATED_YIELD_ENERGY,
         "grid_frequency": rn.GRID_FREQUENCY,
         "internal_temperature": rn.INTERNAL_TEMPERATURE,
         "active_power_control_mode": rn.ACTIVE_POWER_CONTROL_MODE,
@@ -102,6 +105,7 @@ def main(argv: list[str] | None = None) -> None:
     print(f"device_status    : {r.device_status}")
     print(f"input_power (DC) : {r.input_power_w} W")
     print(f"active_power (AC): {r.active_power_w} W   <- PV production")
+    print(f"yield_total      : {r.yield_total_kwh} kWh <- lifetime, inverter's own meter")
     print(f"grid_frequency   : {r.grid_frequency_hz} Hz")
     print(f"internal_temp    : {r.internal_temperature_c} °C")
     print(f"P_MAX (rated)    : {r.p_max_w} W")
