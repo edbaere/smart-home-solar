@@ -282,6 +282,7 @@ class InverterClient:
             "active_power": rn.ACTIVE_POWER,
             "p_max": rn.P_MAX,
             "derating": rn.ACTIVE_POWER_PERCENTAGE_DERATING,
+            "yield_total": rn.ACCUMULATED_YIELD_ENERGY,
         }
         data = await self._device.batch_update(list(names.values()))
         return {k: getattr(data[r], "value", None) for k, r in names.items()}
@@ -415,6 +416,7 @@ async def run(
     action_label = Action.NORMAL.value  # what HA shows (becomes "MANUAL" under manual override)
     target_pct = FULL_POWER_PCT
     derating_pct: float | None = None
+    yield_kwh: float | None = None  # inverter's own lifetime meter, refreshed each control tick
     belpex: float | None = None
     win_low = win_high = win_target = win_r = None  # live window (monitoring)
     last_plan_sig: tuple | None = None  # republish the forecast only when the plan changes
@@ -458,6 +460,7 @@ async def run(
                     p_max = reading["p_max"] or 5000.0
                     cur = reading["derating"] if reading["derating"] is not None else FULL_POWER_PCT
                     derating_pct = reading["derating"]
+                    yield_kwh = reading["yield_total"]
                     load_w = pv + p1r.active_power_w          # p1 net: + = importing
                     export_w = -p1r.active_power_w            # + = exporting
                     now_mono = loop.time()
@@ -541,7 +544,8 @@ async def run(
                     pub.publish_state(state_payload(
                         action=action_label, derating_pct=derating_pct,
                         target_derating_pct=target_pct,
-                        pv_power_w=pv or 0.0, grid_net_w=p1r.active_power_w,
+                        pv_power_w=pv or 0.0, pv_yield_total_kwh=yield_kwh,
+                        grid_net_w=p1r.active_power_w,
                         l1_w=p1r.active_power_l1_w, l2_w=p1r.active_power_l2_w, l3_w=p1r.active_power_l3_w,
                         import_total_kwh=p1r.total_import_kwh, export_total_kwh=p1r.total_export_kwh,
                         belpex=belpex,

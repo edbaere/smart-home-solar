@@ -18,6 +18,7 @@ from typing import Any
 # key, friendly name, HA unit, device_class, state_class  (None where N/A)
 SENSORS: list[tuple[str, str, str | None, str | None, str | None]] = [
     ("pv_power",     "PV production",        "W",   "power",  "measurement"),
+    ("pv_yield_total", "PV yield total",     "kWh", "energy", "total_increasing"),
     ("grid_power",   "Grid net power",       "W",   "power",  "measurement"),
     ("load_power",   "Load",                 "W",   "power",  "measurement"),
     ("l1_power",     "Grid L1",              "W",   "power",  "measurement"),
@@ -85,6 +86,7 @@ def state_payload(
     derating_pct: float | None,
     target_derating_pct: float | None = None,
     pv_power_w: float,
+    pv_yield_total_kwh: float | None = None,
     grid_net_w: float,
     l1_w: float | None = None,
     l2_w: float | None = None,
@@ -106,6 +108,7 @@ def state_payload(
     window_* fields are only set during ZERO_EXPORT (None otherwise → HA shows a gap)."""
     return {
         "pv_power": round(pv_power_w),
+        "pv_yield_total": pv_yield_total_kwh,
         "grid_power": round(grid_net_w),
         "load_power": round(pv_power_w + grid_net_w),
         "export_power": round(-grid_net_w),

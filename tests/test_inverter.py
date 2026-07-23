@@ -13,6 +13,7 @@ SAMPLE = {
     "device_status": "On-grid",
     "input_power": 3167,
     "active_power": 3098,
+    "yield_total": 8934.12,
     "grid_frequency": 50.01,
     "internal_temperature": 49.2,
     "active_power_control_mode": "Unlimited",
@@ -32,6 +33,7 @@ def test_from_values_maps_fields():
     r = from_values(SAMPLE)
     assert r.model_name == "SUN2000-4.6KTL-L1"
     assert r.active_power_w == 3098          # PV production
+    assert r.yield_total_kwh == 8934.12      # lifetime, inverter's own meter
     assert r.input_power_w == 3167
     assert r.control_mode == "Unlimited"
     assert r.percentage_derating == 100.0

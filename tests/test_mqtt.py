@@ -67,6 +67,13 @@ def test_state_payload_tolerates_missing_phases():
     p = state_payload(action="NORMAL", derating_pct=100.0, pv_power_w=1000, grid_net_w=-50)
     assert p["l1_power"] is None
     assert p["import_total"] is None
+    assert p["pv_yield_total"] is None
+
+
+def test_state_payload_includes_pv_yield_total():
+    p = state_payload(action="NORMAL", derating_pct=100.0, pv_power_w=1000, grid_net_w=-50,
+                      pv_yield_total_kwh=8934.12)
+    assert p["pv_yield_total"] == 8934.12    # passed through unrounded (inverter's own kWh meter)
 
 
 # --- forecast / plan ------------------------------------------------------
