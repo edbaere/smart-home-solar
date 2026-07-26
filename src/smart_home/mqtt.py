@@ -30,6 +30,7 @@ SENSORS: list[tuple[str, str, str | None, str | None, str | None]] = [
     ("target_derating", "Target derating",      "%",  None,   "measurement"),
     ("belpex",       "Day-ahead price",      "EUR/MWh", None, "measurement"),
     ("action",       "Curtailment action",   None,  None,     None),
+    ("curtail_binding", "Curtailment binding", None, None,    None),
     # --- monitoring (write-minimisation + policy behaviour) ---
     ("export_power",  "Grid export",             "W",  "power", "measurement"),
     ("writes_today",  "Inverter adjustments today", "writes", None, "measurement"),
@@ -100,12 +101,18 @@ def state_payload(
     window_high: float | None = None,
     window_target: float | None = None,
     inj_cost_ratio: float | None = None,
+    curtail_binding: bool | None = None,
 ) -> dict[str, Any]:
     """Build the shared JSON state. load = pv + grid_net (grid_net + = import).
 
     ``export_power`` is grid export (positive when exporting = −grid_net), published so the
     "window tracking" chart can show export against the [floor, ceiling] band on one axis. The
-    window_* fields are only set during ZERO_EXPORT (None otherwise → HA shows a gap)."""
+    window_* fields are only set during ZERO_EXPORT (None otherwise → HA shows a gap).
+
+    ``curtail_binding``: "yes" when the derating cap is actually the thing holding production
+    down right now, "no" when a cap is commanded but production sits below it anyway (e.g. low
+    irradiance) — mode is on, but nothing is actually being trimmed. See
+    :func:`smart_home.control.curtail_binding`."""
     return {
         "pv_power": round(pv_power_w),
         "pv_yield_total": pv_yield_total_kwh,
@@ -127,6 +134,7 @@ def state_payload(
         "window_high": _r(window_high),
         "window_target": _r(window_target),
         "inj_cost_ratio": None if inj_cost_ratio is None else round(inj_cost_ratio, 3),
+        "curtail_binding": None if curtail_binding is None else ("yes" if curtail_binding else "no"),
     }
 
 

@@ -76,6 +76,20 @@ def test_state_payload_includes_pv_yield_total():
     assert p["pv_yield_total"] == 8934.12    # passed through unrounded (inverter's own kWh meter)
 
 
+def test_state_payload_curtail_binding_defaults_to_none():
+    p = state_payload(action="NORMAL", derating_pct=100.0, pv_power_w=1000, grid_net_w=-50)
+    assert p["curtail_binding"] is None
+
+
+def test_state_payload_curtail_binding_yes_no():
+    yes = state_payload(action="ZERO_EXPORT", derating_pct=50.0, pv_power_w=1000,
+                        grid_net_w=-50, curtail_binding=True)
+    no = state_payload(action="ZERO_EXPORT", derating_pct=50.0, pv_power_w=1000,
+                       grid_net_w=-50, curtail_binding=False)
+    assert yes["curtail_binding"] == "yes"
+    assert no["curtail_binding"] == "no"
+
+
 # --- forecast / plan ------------------------------------------------------
 
 def _slot(start, belpex):

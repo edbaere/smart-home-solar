@@ -52,6 +52,7 @@ from smart_home.control import (
     MIN_WRITE_INTERVAL_S,
     WindowController,
     compute_setpoint,
+    curtail_binding,
     injection_limit_percent,
 )
 from smart_home.economics import Action
@@ -416,6 +417,7 @@ async def run(
     action_label = Action.NORMAL.value  # what HA shows (becomes "MANUAL" under manual override)
     target_pct = FULL_POWER_PCT
     derating_pct: float | None = None
+    p_max: float = 5000.0  # cached inverter rated power; refreshed each control tick
     yield_kwh: float | None = None  # inverter's own lifetime meter, refreshed each control tick
     belpex: float | None = None
     win_low = win_high = win_target = win_r = None  # live window (monitoring)
@@ -552,6 +554,7 @@ async def run(
                         writes_today=writes.today, writes_total=writes.total,
                         window_low=win_low, window_high=win_high, window_target=win_target,
                         inj_cost_ratio=win_r,
+                        curtail_binding=curtail_binding(derating_pct, pv or 0.0, p_max),
                     ))
                 except Exception:
                     log.debug("telemetry tick failed", exc_info=True)
