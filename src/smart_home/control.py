@@ -31,6 +31,7 @@ from smart_home.economics import (
 )
 
 DEFAULT_MARGIN_W = 200.0  # over-production buffer: we'd rather slightly export than import
+DEFAULT_BINDING_MARGIN_W = 150.0  # noise tolerance for "is production actually at the cap"
 
 
 @dataclass(frozen=True)
@@ -69,6 +70,27 @@ def compute_setpoint(
     target_w = max(0.0, load_w + margin_w)
     pct = max(0.0, min(100.0, target_w / p_max_w * 100.0))
     return Setpoint(action, round(pct, 1), target_w, "zero-export: cap at load + margin")
+
+
+def curtail_binding(
+    derating_pct: float | None,
+    pv_power_w: float,
+    p_max_w: float,
+    margin_w: float = DEFAULT_BINDING_MARGIN_W,
+) -> bool:
+    """Whether the derating % is actually the thing holding production down right now.
+
+    A cap only "binds" when production is riding close to it. If ``pv_power_w`` sits well below
+    the derated ceiling (``derating_pct/100 * p_max_w``) — low irradiance, or a load spike that
+    already passed by the time a write landed — uncapping wouldn't raise output: the panels, not
+    the controller, are the limit. Distinguishes "curtailment mode is on" from "actively
+    curtailing", which a dashboard otherwise conflates (mode ON always shows as curtailing, even
+    on a cloudy tick where the cap is nowhere near what the panels could produce).
+    """
+    if derating_pct is None or derating_pct >= 100.0 - 0.5:
+        return False
+    cap_w = derating_pct / 100.0 * p_max_w
+    return pv_power_w >= cap_w - margin_w
 
 
 def injection_limit_percent(

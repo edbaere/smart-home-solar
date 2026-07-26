@@ -6,6 +6,7 @@ from smart_home.control import (
     DEFAULT_MARGIN_W,
     Setpoint,
     compute_setpoint,
+    curtail_binding,
     injection_limit_percent,
 )
 from smart_home.economics import Action
@@ -86,3 +87,32 @@ def test_injection_limit_zero_target_matches_zero_export():
 def test_injection_limit_clamps_to_100():
     # load already high, big target -> would exceed rated power -> capped at 100%.
     assert _inj(2000, 4900, 0) == 100.0
+
+
+# --- curtail binding (is the cap actually holding production down?) -------
+
+def test_no_cap_never_binds():
+    # 100% derating (or no cap at all) -> nothing to bind, regardless of production.
+    assert curtail_binding(100.0, 3000, PMAX) is False
+    assert curtail_binding(None, 3000, PMAX) is False
+
+
+def test_production_at_the_cap_is_binding():
+    # 50% derating -> 2500W cap; production riding right at it.
+    assert curtail_binding(50.0, 2490, PMAX) is True
+
+
+def test_production_well_below_the_cap_is_not_binding():
+    # cloudy tick from the real incident: 58.1% derating -> ~2905W cap, but panels only
+    # producing ~390W -> the cap isn't what's limiting output.
+    assert curtail_binding(58.1, 390, PMAX) is False
+
+
+def test_binding_margin_tolerates_noise_near_the_cap():
+    # within the default 150W margin of the cap still counts as binding.
+    assert curtail_binding(50.0, 2500 - 149, PMAX) is True
+    assert curtail_binding(50.0, 2500 - 151, PMAX) is False
+
+
+def test_full_curtail_zero_cap_is_binding_at_zero_production():
+    assert curtail_binding(0.0, 0, PMAX) is True
