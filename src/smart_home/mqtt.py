@@ -26,8 +26,8 @@ SENSORS: list[tuple[str, str, str | None, str | None, str | None]] = [
     ("l3_power",     "Grid L3",              "W",   "power",  "measurement"),
     ("import_total", "Grid import total",    "kWh", "energy", "total_increasing"),
     ("export_total", "Grid export total",    "kWh", "energy", "total_increasing"),
-    ("derating",        "Active power derating", "%", None,   "measurement"),
-    ("target_derating", "Target derating",      "%",  None,   "measurement"),
+    ("derating",        "Output cap",        "%", None,   "measurement"),
+    ("target_derating", "Target output cap", "%",  None,   "measurement"),
     ("belpex",       "Day-ahead price",      "EUR/MWh", None, "measurement"),
     ("action",       "Curtailment action",   None,  None,     None),
     ("curtail_binding", "Curtailment binding", None, None,    None),
@@ -237,7 +237,7 @@ def switch_discovery_config(
 
 # --- manual derating override ---------------------------------------------
 #
-# A "Manual override" switch + a "Manual derating %" number. When the switch is ON the
+# A "Manual override" switch + a "Manual output cap %" number. When the switch is ON the
 # controller writes the chosen % directly and ignores the plan (full precedence). The switch
 # is never persisted — it reverts to OFF on restart so a reboot can't strand the inverter
 # pinned at a manual value. The % is remembered for convenience.
@@ -265,7 +265,7 @@ def manual_number_discovery_config(
 ) -> dict[str, dict[str, Any]]:
     """Return the {config_topic: payload} HA-discovery message for the manual-derating number."""
     cfg = {
-        "name": "Manual derating",
+        "name": "Manual output cap %",
         "unique_id": f"smart_home_{node_id}_manual_derating",
         "object_id": "solar_manual_derating",
         "command_topic": command_topic,
