@@ -102,6 +102,15 @@ class WriteCounter:
             return False
         return True
 
+    def today_count(self) -> int:
+        """Today's write count for display, without mutating state.
+
+        `today`/`date` only roll over inside `bump()`, which runs on an actual write. On a day
+        with zero writes (e.g. curtailment never triggers), that leaves `today` stuck at
+        yesterday's value indefinitely. Telemetry should show 0, not a stale carry-over.
+        """
+        return self.today if self._today() == self.date else 0
+
     def bump(self) -> None:
         t = self._today()
         if t != self.date:
@@ -521,7 +530,7 @@ async def run(
                         "action=%s target=%.1f%% (cur=%s%%) mode=%s prod=%.0fW net=%+dW "
                         "writes[today=%d total=%d] :: %s",
                         action_label, target_pct, reading["derating"], mode,
-                        pv, int(p1r.active_power_w), writes.today, writes.total, reason,
+                        pv, int(p1r.active_power_w), writes.today_count(), writes.total, reason,
                     )
                 except Exception:
                     log.exception("control cycle failed -> fail-safe to %.0f%%", FULL_POWER_PCT)
@@ -551,7 +560,7 @@ async def run(
                         l1_w=p1r.active_power_l1_w, l2_w=p1r.active_power_l2_w, l3_w=p1r.active_power_l3_w,
                         import_total_kwh=p1r.total_import_kwh, export_total_kwh=p1r.total_export_kwh,
                         belpex=belpex,
-                        writes_today=writes.today, writes_total=writes.total,
+                        writes_today=writes.today_count(), writes_total=writes.total,
                         window_low=win_low, window_high=win_high, window_target=win_target,
                         inj_cost_ratio=win_r,
                         curtail_binding=curtail_binding(derating_pct, pv or 0.0, p_max),
