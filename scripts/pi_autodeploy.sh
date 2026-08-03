@@ -16,6 +16,12 @@ REMOTE=$(git rev-parse origin/main)
 if [ "$PREV" = "$REMOTE" ]; then
     exit 0   # nothing new
 fi
+if ! git merge-base --is-ancestor "$PREV" "$REMOTE"; then
+    # Local HEAD has commits origin/main doesn't (ahead or diverged, e.g. an unpushed local
+    # commit) -- resetting here would silently discard them. Leave it alone and retry next tick.
+    echo "autodeploy: local ${PREV:0:7} is ahead of/diverged from origin/main ${REMOTE:0:7} -- skipping to avoid discarding local work" >&2
+    exit 0
+fi
 
 echo "autodeploy: ${PREV:0:7} -> ${REMOTE:0:7}"
 git reset --hard origin/main
