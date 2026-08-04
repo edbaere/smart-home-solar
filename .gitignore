@@ -18,3 +18,4 @@ secrets.*
 
 # Docker runtime data
 deploy/ha-config/
+deploy/mosquitto/passwd
