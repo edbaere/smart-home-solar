@@ -26,6 +26,7 @@ fi
 echo "autodeploy: ${PREV:0:7} -> ${REMOTE:0:7}"
 git reset --hard origin/main
 "$VENV/pip" install -q -e ".[dev,hw,mqtt]"
+( cd deploy && docker compose build )
 sudo cp deploy/smart_home-*.service deploy/smart_home-*.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 

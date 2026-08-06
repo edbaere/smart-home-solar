@@ -8,6 +8,6 @@ Type=oneshot
 # the retry loop can run until 17:00, so disable the default start timeout
 TimeoutStartSec=infinity
 User=solarpi
-WorkingDirectory=/home/solarpi/smart_home
+WorkingDirectory=/home/solarpi/smart_home/deploy
 EnvironmentFile=/etc/smart_home.env
-ExecStart=/home/solarpi/smart_home/.venv/bin/python -m smart_home.schedule refresh --wait-tomorrow
+ExecStart=/usr/bin/docker compose run --rm --remove-orphans refresh

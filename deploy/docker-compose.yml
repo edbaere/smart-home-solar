@@ -1,6 +1,13 @@
-# Home Assistant + Mosquitto (MQTT) for the smart_home Pi.
+# Home Assistant + Mosquitto (MQTT) + the PV curtailment controller/refresh for the smart_home Pi.
 #   cd deploy && docker compose up -d
-# Both use host networking so the on-host controller and HA share localhost:1883.
+# All use host networking: HA/mosquitto share localhost:1883, and the controller additionally
+# needs wlan0 (the inverter's own Wi-Fi AP, 192.168.200.1:6607) and the LAN (P1 meter).
+#
+# Explicit project `name:` -- both this repo and home-automation name their deploy dir "deploy",
+# which without this collides on Compose's default (directory-basename) project name and risks
+# `docker compose down`/`up` here reaching into home-automation's containers instead of just
+# this repo's services.
+name: smart-home
 services:
   mosquitto:
     image: eclipse-mosquitto:2
@@ -23,6 +30,83 @@ services:
       - ./ha-config:/config
     depends_on:
       - mosquitto
+
+  # Write-capable, switch-gated controller -- the always-on production service. Sole Modbus
+  # client to the inverter, so this and `publisher` must never run at the same time (see
+  # `publisher`'s profile below). Profile-gated (like publisher) so a bare `docker compose up -d`
+  # -- the exact command this file's own header documents for bringing up HA/mosquitto -- can
+  # never accidentally start a second Modbus client alongside a still-running native
+  # smart_home-controller.service; the systemd unit that manages this targets it by explicit
+  # service name (`docker compose up -d controller`), which starts it regardless of profile.
+  controller:
+    build: ..
+    image: smart-home-controller
+    container_name: smart_home-controller
+    network_mode: host
+    restart: unless-stopped
+    profiles: ["controller"]
+    # run as the host solarpi user (uid/gid 1000) -- the state dir (~/.smart_home) and its
+    # files are solarpi-owned; running as root here would flip their ownership and could then
+    # deny the native systemd units that read/write the same path (found while testing `refresh`
+    # below, which shares this same state dir).
+    user: "1000:1000"
+    environment:
+      - HOME=/home/solarpi
+      - P1_HOST
+      - HUAWEI_USER
+      - HUAWEI_PW
+      - MQTT_HOST
+      - MQTT_PORT
+      - MQTT_USER
+      - MQTT_PW
+      - NODE_ID
+    volumes:
+      - /home/solarpi/.smart_home:/home/solarpi/.smart_home
+    command: ["smart_home.controller", "--p1-host", "${P1_HOST}"]
+
+  # Dry-run monitoring-only variant (never writes to the inverter) -- the pre-actuation setup
+  # this repo's README describes, or a manual fallback if `controller` needs to come down without
+  # losing telemetry. Not started by `docker compose up -d` (no `controller`+`publisher` running
+  # together -- single Modbus client): `docker compose --profile publisher up -d publisher`.
+  publisher:
+    build: ..
+    image: smart-home-controller
+    container_name: smart_home-publisher
+    network_mode: host
+    restart: unless-stopped
+    profiles: ["publisher"]
+    user: "1000:1000"
+    environment:
+      - HOME=/home/solarpi
+      - P1_HOST
+      - MQTT_USER
+      - MQTT_PW
+      - NODE_ID
+    volumes:
+      - /home/solarpi/.smart_home:/home/solarpi/.smart_home
+    command: ["smart_home.controller", "--p1-host", "${P1_HOST}", "--mqtt-host", "localhost", "--dry-run"]
+
+  # Oneshot daily day-ahead refresh -- invoked by smart_home-refresh.timer via
+  # `docker compose run --rm refresh`, not left running. Profile-gated for the same reason as
+  # `controller`/`publisher`: keeps it out of a bare `docker compose up -d`. `run` targets it by
+  # explicit name, which bypasses the profile gate.
+  refresh:
+    build: ..
+    image: smart-home-controller
+    network_mode: host
+    profiles: ["refresh"]
+    user: "1000:1000"
+    environment:
+      - HOME=/home/solarpi
+      - ENTSOE_API_TOKEN
+      - MQTT_HOST
+      - MQTT_PORT
+      - MQTT_USER
+      - MQTT_PW
+      - NODE_ID
+    volumes:
+      - /home/solarpi/.smart_home:/home/solarpi/.smart_home
+    command: ["smart_home.schedule", "refresh", "--wait-tomorrow"]
 
 volumes:
   mosquitto-data:
