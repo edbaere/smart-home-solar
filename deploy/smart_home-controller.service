@@ -1,3 +1,10 @@
+# ROLLBACK PATH: the controller now runs containerized (see deploy/docker-compose.yml,
+# `controller` service, restart: unless-stopped -- same pattern as homeassistant/mosquitto,
+# no systemd wrapper needed since Docker's own restart policy covers boot/crash recovery).
+# This unit is kept installed but disabled purely so a bad container rollout can be reverted
+# fast: `docker compose stop controller && sudo systemctl start smart_home-controller.service`.
+# Don't `enable` this alongside the container -- both are the sole Modbus client to the
+# inverter and can't run at once.
 [Unit]
 Description=smart_home PV curtailment controller (write-capable; gated by HA "Curtailment control" switch, default OFF)
 After=network-online.target

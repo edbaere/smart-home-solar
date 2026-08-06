@@ -31,7 +31,10 @@ sudo cp deploy/smart_home-*.service deploy/smart_home-*.timer /etc/systemd/syste
 sudo systemctl daemon-reload
 
 if "$VENV/pytest" -q; then
-    sudo systemctl restart smart_home-controller.service
+    # Controller runs containerized (restart: unless-stopped, no systemd wrapper -- same as
+    # homeassistant/mosquitto); `up -d` recreates it against the image just rebuilt above.
+    # smart_home-controller.service stays installed-but-disabled as the rollback path.
+    ( cd deploy && docker compose --profile controller up -d controller )
     echo "autodeploy: tests passed -> controller restarted at ${REMOTE:0:7}"
 else
     echo "autodeploy: TESTS FAILED at ${REMOTE:0:7} -> rolling back to ${PREV:0:7}" >&2
