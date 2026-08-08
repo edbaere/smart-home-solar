@@ -37,9 +37,16 @@ class Schedule:
     slots: list[Slot]
 
     def _step(self) -> timedelta:
-        """Slot duration, inferred from the first two starts (default 1h)."""
-        if len(self.slots) >= 2:
-            return _parse(self.slots[1].start) - _parse(self.slots[0].start)
+        """Slot duration, inferred from the first two *distinct* starts (default 1h).
+
+        Uses the two earliest unique timestamps rather than ``slots[0]``/``slots[1]``
+        directly: a duplicated leading slot (e.g. from an upstream feed that repeated a
+        period) would otherwise infer a zero-length step, which makes ``action_at``'s
+        ``start <= when < start + step`` unsatisfiable for *every* slot.
+        """
+        starts = sorted({_parse(s.start) for s in self.slots})
+        if len(starts) >= 2:
+            return starts[1] - starts[0]
         return timedelta(hours=1)
 
     def action_at(self, when: datetime) -> Slot | None:

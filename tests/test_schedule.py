@@ -63,6 +63,19 @@ def test_empty_schedule_action_is_none():
     assert Schedule([]).action_at(datetime(2026, 6, 21, 10, 7, tzinfo=BRUSSELS)) is None
 
 
+def test_action_at_survives_a_duplicated_leading_slot():
+    # A duplicated first timestamp (e.g. from an upstream feed returning the same period
+    # twice) must not zero out the inferred step and make every slot unmatchable.
+    slots = [
+        Slot.from_belpex("2026-06-21T10:00:00+02:00", 5.0),   # duplicate of the next one
+        Slot.from_belpex("2026-06-21T10:00:00+02:00", 5.0),   # ZERO_EXPORT
+        Slot.from_belpex("2026-06-21T10:15:00+02:00", 90.0),  # NORMAL
+    ]
+    s = Schedule(slots)
+    assert s.action_at(datetime(2026, 6, 21, 10, 7, tzinfo=BRUSSELS)).action == Action.ZERO_EXPORT
+    assert s.action_at(datetime(2026, 6, 21, 10, 20, tzinfo=BRUSSELS)).action == Action.NORMAL
+
+
 # --- dropping incomplete (not-yet-published) days --------------------------
 
 def _full_day(day: str, n: int = 96) -> list[Slot]:

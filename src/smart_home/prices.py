@@ -92,13 +92,21 @@ def parse_entsoe_xml(xml_text: str) -> list[RawPrice]:
     Handles namespaces, PT60M/PT30M/PT15M resolutions, and ENTSO-E's sparse-point
     convention (a missing position repeats the previous value). Raises
     :class:`EntsoeError` if the platform returned an acknowledgement/error document.
+
+    ENTSO-E sometimes includes more than one ``TimeSeries`` covering the same period in a
+    single document (observed: two, same businessType/curveType, different mRID -- a
+    resubmitted/revised copy of the same day). Keyed by timestamp rather than appended, so a
+    repeated period overwrites rather than duplicates -- the later ``TimeSeries`` in the
+    document wins. Without this, a duplicated day produced two identical slots per quarter-hour,
+    which made adjacent slots share a start time and broke step-duration inference downstream
+    (see :meth:`smart_home.schedule.Schedule._step`) -- the plan then matched *no* slot, ever.
     """
     root = ET.fromstring(xml_text)
     if _local(root.tag).startswith("Acknowledgement"):
         reason = _first_text(root, "text") or "unknown reason"
         raise EntsoeError(f"ENTSO-E returned no data: {reason}")
 
-    prices: list[RawPrice] = []
+    prices: dict[datetime, float] = {}
     for period in _iter(root, "Period"):
         start_text = _first_text(period, "start")
         resolution = _first_text(period, "resolution")
@@ -120,8 +128,8 @@ def parse_entsoe_xml(xml_text: str) -> list[RawPrice]:
         for pos in range(1, max(points) + 1):
             if pos in points:           # sparse points repeat the previous value
                 last = points[pos]
-            prices.append(RawPrice(start=start + step * (pos - 1), belpex_eur_mwh=last))
-    return prices
+            prices[start + step * (pos - 1)] = last
+    return [RawPrice(start=ts, belpex_eur_mwh=p) for ts, p in sorted(prices.items())]
 
 
 # --- schedule -------------------------------------------------------------

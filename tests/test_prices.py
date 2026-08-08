@@ -52,6 +52,30 @@ PT15_XML = """<?xml version="1.0" encoding="UTF-8"?>
   </Period></TimeSeries>
 </Publication_MarketDocument>"""
 
+# Two TimeSeries covering the identical period -- observed from the live ENTSO-E API
+# (same businessType/curveType, different mRID: a resubmitted/revised copy of the same day).
+DUPLICATE_TIMESERIES_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<Publication_MarketDocument xmlns="urn:iec62325.351:tc57wg16:451-3:publicationdocument:7:0">
+  <TimeSeries>
+    <mRID>1</mRID>
+    <Period>
+      <timeInterval><start>2026-06-21T22:00Z</start><end>2026-06-22T00:00Z</end></timeInterval>
+      <resolution>PT60M</resolution>
+      <Point><position>1</position><price.amount>90.00</price.amount></Point>
+      <Point><position>2</position><price.amount>5.00</price.amount></Point>
+    </Period>
+  </TimeSeries>
+  <TimeSeries>
+    <mRID>2</mRID>
+    <Period>
+      <timeInterval><start>2026-06-21T22:00Z</start><end>2026-06-22T00:00Z</end></timeInterval>
+      <resolution>PT60M</resolution>
+      <Point><position>1</position><price.amount>90.00</price.amount></Point>
+      <Point><position>2</position><price.amount>5.00</price.amount></Point>
+    </Period>
+  </TimeSeries>
+</Publication_MarketDocument>"""
+
 
 # --- parsing --------------------------------------------------------------
 
@@ -76,6 +100,15 @@ def test_parse_fills_missing_position_with_previous_value():
 def test_parse_pt15m_resolution_steps_15_minutes():
     prices = parse_entsoe_xml(PT15_XML)
     assert (prices[1].start - prices[0].start).total_seconds() == 15 * 60
+
+
+def test_parse_dedupes_repeated_timeseries_for_the_same_period():
+    # Two TimeSeries covering the same hours must collapse to one slot per timestamp, not
+    # double up -- a duplicated leading timestamp breaks Schedule._step()'s inference downstream.
+    prices = parse_entsoe_xml(DUPLICATE_TIMESERIES_XML)
+    assert len(prices) == 2
+    assert [p.start for p in prices] == sorted(p.start for p in prices)
+    assert len({p.start for p in prices}) == 2
 
 
 def test_acknowledgement_raises_with_reason():
