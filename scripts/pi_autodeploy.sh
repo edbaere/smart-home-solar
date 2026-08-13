@@ -22,6 +22,14 @@ if ! git merge-base --is-ancestor "$PREV" "$REMOTE"; then
     echo "autodeploy: local ${PREV:0:7} is ahead of/diverged from origin/main ${REMOTE:0:7} -- skipping to avoid discarding local work" >&2
     exit 0
 fi
+if ! git diff --quiet HEAD --; then
+    # The ancestor check above only covers *committed* local work. `git reset --hard` discards
+    # uncommitted changes to tracked files too, and unlike commits those have no reflog to
+    # recover from -- so they are the more dangerous of the two. Untracked files are safe
+    # (nothing here runs `git clean`).
+    echo "autodeploy: uncommitted changes to tracked files -- skipping to avoid discarding them (commit or stash and this deploys normally)" >&2
+    exit 0
+fi
 
 echo "autodeploy: ${PREV:0:7} -> ${REMOTE:0:7}"
 git reset --hard origin/main
