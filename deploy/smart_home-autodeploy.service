@@ -6,5 +6,11 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 User=solarpi
+# docker-compose.yml passes HUAWEI_PW/P1_HOST/MQTT_* into the controller from the invoking
+# process's environment. Without this, a deploy that recreates the controller container hands it
+# blank credentials and it crash-loops -- unattended, whenever the timer happens to fire. The
+# other three smart_home units already load this file; autodeploy was the odd one out.
+# Root-only 0600 is fine: systemd reads it as root before dropping to User= above.
+EnvironmentFile=/etc/smart_home.env
 WorkingDirectory=/home/solarpi/smart_home
 ExecStart=/home/solarpi/smart_home/scripts/pi_autodeploy.sh
