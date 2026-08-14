@@ -50,6 +50,22 @@ if ! git diff --quiet HEAD --; then
     exit 0
 fi
 
+# deploy/docker-compose.yml passes these into the controller from THIS process's environment.
+# If they are missing, `docker compose up` cheerfully recreates the container with blank
+# credentials and it crash-loops -- which is exactly what a hand-run without the env did on
+# 2026-08-14. The systemd unit supplies them via EnvironmentFile=/etc/smart_home.env; a manual
+# run needs them sourced first. Fail here, before touching the working tree or the container,
+# rather than discovering it from a restart loop:
+#   set -a; source <(sudo cat /etc/smart_home.env); set +a; ./scripts/pi_autodeploy.sh
+# MQTT_PORT is deliberately NOT required: it is absent from /etc/smart_home.env and the
+# controller defaults to 1883, so demanding it would block every deploy including the timer's.
+for v in P1_HOST HUAWEI_USER HUAWEI_PW MQTT_HOST MQTT_USER MQTT_PW NODE_ID; do
+    if [ -z "${!v:-}" ]; then
+        echo "autodeploy: \$$v is not set -- refusing to deploy (would recreate the controller with blank credentials). Run via 'sudo systemctl start smart_home-autodeploy.service', or source /etc/smart_home.env first." >&2
+        exit 1
+    fi
+done
+
 echo "autodeploy: ${LAST_DEPLOYED:0:7} -> ${REMOTE:0:7}"
 git reset --hard origin/main
 "$VENV/pip" install -q -e ".[dev,hw,mqtt]"
