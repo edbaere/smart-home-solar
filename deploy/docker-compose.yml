@@ -14,6 +14,21 @@ services:
     container_name: mosquitto
     network_mode: host
     restart: unless-stopped
+    # Make these the last things the kernel kills when the host runs out of memory.
+    #
+    # This box also runs unrelated and much hungrier workloads. If one exhausts RAM the OOM
+    # killer picks a victim by score, and with everything left at the default 0 there is
+    # nothing telling it to spare home automation. A negative oom_score_adj does. Learned
+    # from a real host-wide memory exhaustion on 2026-08-24, where the kernel killed a
+    # browser while the actual multi-GB offender sat at 0 and survived untouched.
+    #
+    # Deliberately no mem_limit on these two: they are small and steady, and killing them
+    # for sitting at a ceiling is precisely the outcome this is meant to prevent. Caps
+    # belong on the workloads that can actually run away, not on the ones you need alive.
+    #
+    # NOTE: oom_score_adj is fixed at container creation. `docker update` cannot change it
+    # and `docker restart` reuses the old value -- only a recreate applies an edit here.
+    oom_score_adj: -800
     volumes:
       - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - ./mosquitto/passwd:/mosquitto/config/passwd:ro
@@ -24,6 +39,8 @@ services:
     container_name: homeassistant
     network_mode: host
     restart: unless-stopped
+    # See mosquitto above.
+    oom_score_adj: -800
     environment:
       - TZ=Europe/Brussels
     volumes:
@@ -45,6 +62,21 @@ services:
     network_mode: host
     restart: unless-stopped
     profiles: ["controller"]
+    # Memory containment. Steady state is ~16 MB, so 512m is ~30x headroom -- sized as a
+    # runaway detector, not a constraint. This service has never been the problem; the cap
+    # is here so it cannot become one.
+    #
+    # `memswap_limit` must stay equal to `mem_limit`: that is what disables swap for this
+    # cgroup, and it is the load-bearing half. With swap available a runaway degrades into
+    # hours of disk thrash rather than dying quickly, and on this host the thrash is what
+    # turned a memory exhaustion into a seven-hour freeze. Do not remove it as redundant.
+    #
+    # Negative oom_score_adj, but above mosquitto/HA (-800): losing curtailment stops the
+    # inverter being throttled, which is real but recoverable via `restart: unless-stopped`.
+    # Losing MQTT or HA takes the whole house down with it.
+    mem_limit: 512m
+    memswap_limit: 512m
+    oom_score_adj: -500
     # run as the host solarpi user (uid/gid 1000) -- the state dir (~/.smart_home) and its
     # files are solarpi-owned; running as root here would flip their ownership and could then
     # deny the native systemd units that read/write the same path (found while testing `refresh`
@@ -75,6 +107,11 @@ services:
     network_mode: host
     restart: unless-stopped
     profiles: ["publisher"]
+    # Same shape as `controller` above -- same image, same footprint, and the two are
+    # mutually exclusive, so they get identical limits.
+    mem_limit: 512m
+    memswap_limit: 512m
+    oom_score_adj: -500
     user: "1000:1000"
     environment:
       - HOME=/home/solarpi
